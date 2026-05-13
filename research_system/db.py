@@ -1,19 +1,157 @@
-"""SQLite schema + helpers."""
+"""SQLite schema + helpers.
+
+Backend is pluggable:
+  - default: local SQLite file (DB_PATH)
+  - if TURSO_DATABASE_URL + TURSO_AUTH_TOKEN env vars are set, uses
+    libsql-experimental embedded-replica mode — local SQLite that
+    auto-syncs to Turso (hosted libSQL) so the VPS scheduler and
+    Streamlit Cloud dashboard share one logical DB.
+
+The wrapper exposes a sqlite3-compatible API so the rest of the
+codebase doesn't change.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 from .config import DB_PATH
 
 log = logging.getLogger(__name__)
+
+
+# ----------------------------- libsql adapters --------------------------
+
+def _turso_enabled() -> bool:
+    return bool(os.getenv("TURSO_DATABASE_URL"))
+
+
+class _DictRow:
+    """sqlite3.Row-lookalike: supports row[int], row['col'], dict(row),
+    keys(), and len(). Built from a description tuple + values tuple."""
+    __slots__ = ("_cols", "_vals", "_lookup")
+
+    def __init__(self, cols: tuple[str, ...], vals: Sequence):
+        self._cols = cols
+        self._vals = tuple(vals)
+        self._lookup = {c: i for i, c in enumerate(cols)}
+
+    def __getitem__(self, k):
+        if isinstance(k, int):
+            return self._vals[k]
+        return self._vals[self._lookup[k]]
+
+    def __iter__(self):
+        return iter(self._vals)
+
+    def __len__(self):
+        return len(self._vals)
+
+    def keys(self):
+        return list(self._cols)
+
+    def __repr__(self):
+        return f"<Row {dict(zip(self._cols, self._vals))}>"
+
+
+class _LibsqlCursor:
+    def __init__(self, cur):
+        self._cur = cur
+
+    @property
+    def description(self):
+        return self._cur.description
+
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
+    @property
+    def rowcount(self):
+        return getattr(self._cur, "rowcount", -1)
+
+    def _cols(self) -> tuple[str, ...]:
+        desc = self._cur.description or ()
+        return tuple(d[0] for d in desc)
+
+    def fetchone(self):
+        row = self._cur.fetchone()
+        if row is None:
+            return None
+        return _DictRow(self._cols(), row)
+
+    def fetchall(self):
+        cols = self._cols()
+        return [_DictRow(cols, r) for r in self._cur.fetchall()]
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+
+class _LibsqlConn:
+    """sqlite3.Connection-shim wrapping libsql_experimental.Connection."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def execute(self, sql: str, params: Sequence = ()):
+        cur = self._raw.execute(sql, tuple(params)) if params else self._raw.execute(sql)
+        return _LibsqlCursor(cur)
+
+    def executescript(self, script: str):
+        return self._raw.executescript(script)
+
+    def commit(self):
+        return self._raw.commit()
+
+    def close(self):
+        try:
+            self._raw.sync()           # one last push before closing
+        except Exception:
+            pass
+        return self._raw.close()
+
+    def sync(self):
+        try:
+            return self._raw.sync()
+        except Exception as e:
+            log.debug("libsql sync skipped: %s", e)
+
+
+def _open_libsql() -> _LibsqlConn:
+    import libsql_experimental as libsql
+    url = os.environ["TURSO_DATABASE_URL"]
+    token = os.environ.get("TURSO_AUTH_TOKEN", "")
+    # Local replica file lives next to the regular DB
+    local = str(DB_PATH.with_suffix(".replica.db"))
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    interval = float(os.getenv("TURSO_SYNC_INTERVAL", "30"))
+    raw = libsql.connect(
+        local,
+        sync_url=url,
+        auth_token=token,
+        sync_interval=interval,
+        isolation_level=None,   # autocommit, like the sqlite3 path
+    )
+    return _LibsqlConn(raw)
+
+
+def _is_unique_violation(exc: BaseException) -> bool:
+    """libsql raises ValueError on constraint failure; sqlite3 raises
+    IntegrityError. Treat both as 'dedupe collision'."""
+    if isinstance(exc, sqlite3.IntegrityError):
+        return True
+    if isinstance(exc, ValueError) and "constraint failed" in str(exc).lower():
+        return True
+    return False
 
 
 SCHEMA = """
@@ -92,14 +230,21 @@ def ensure_db() -> None:
 
 @contextmanager
 def connect():
-    cx = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
-    cx.row_factory = sqlite3.Row
-    cx.execute("PRAGMA journal_mode=WAL;")
-    cx.execute("PRAGMA foreign_keys=ON;")
+    if _turso_enabled():
+        cx = _open_libsql()
+        try:
+            yield cx
+        finally:
+            cx.close()
+        return
+    raw = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+    raw.row_factory = sqlite3.Row
+    raw.execute("PRAGMA journal_mode=WAL;")
+    raw.execute("PRAGMA foreign_keys=ON;")
     try:
-        yield cx
+        yield raw
     finally:
-        cx.close()
+        raw.close()
 
 
 # ----------------------------- updates ----------------------------------
@@ -125,8 +270,10 @@ def insert_update(
                 (ticker, source, type_, headline, body, url, dedupe, fetched_at),
             )
             return cur.lastrowid
-    except sqlite3.IntegrityError:
-        return None  # dedupe hit
+    except Exception as e:
+        if _is_unique_violation(e):
+            return None  # dedupe hit
+        raise
 
 
 def unprocessed_updates(limit: int = 50) -> list[sqlite3.Row]:

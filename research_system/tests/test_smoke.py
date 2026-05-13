@@ -235,6 +235,71 @@ class DashboardImportTest(unittest.TestCase):
         self.assertEqual(len(mod.TABS), 9)
 
 
+class LibsqlBackendTest(unittest.TestCase):
+    """Exercise the libsql (Turso embedded-replica) backend in local-only
+    mode — same DB API surface, must dedupe + time-window correctly."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="libsql_test_"))
+        self._patches: list[mock._patch] = []
+        try:
+            import libsql_experimental as libsql
+        except Exception as e:
+            self.skipTest(f"libsql-experimental not installed: {e}")
+
+        from research_system import db as db_mod
+        self.db = db_mod
+        # Monkeypatch DB_PATH + _open_libsql + TURSO env
+        self._patches += [
+            mock.patch.object(db_mod, "DB_PATH", self.tmp / "test.db"),
+            mock.patch.dict(os.environ, {"TURSO_DATABASE_URL": "libsql://fake.test"}),
+        ]
+        def _local():
+            raw = libsql.connect(str(self.tmp / "test.db"), isolation_level=None)
+            return db_mod._LibsqlConn(raw)
+        self._patches.append(mock.patch.object(db_mod, "_open_libsql", _local))
+        for p in self._patches:
+            p.start()
+        db_mod.ensure_db()
+
+    def tearDown(self):
+        for p in reversed(self._patches):
+            p.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_insert_dedupe_roundtrip(self):
+        uid = self.db.insert_update(ticker="HATSUN", source="t", type_="news",
+                                    headline="H", body="b", url="u")
+        self.assertIsNotNone(uid)
+        dup = self.db.insert_update(ticker="HATSUN", source="t", type_="news",
+                                    headline="H", body="b", url="u")
+        self.assertIsNone(dup, "libsql backend should dedupe on UNIQUE constraint")
+
+    def test_time_window(self):
+        new = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        old = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S")
+        with self.db.connect() as cx:
+            cx.execute("INSERT INTO updates(source,headline,dedupe_key,fetched_at) VALUES (?,?,?,?)",
+                       ("t","new","k_new",new))
+            cx.execute("INSERT INTO updates(source,headline,dedupe_key,fetched_at) VALUES (?,?,?,?)",
+                       ("t","old","k_old",old))
+        self.assertEqual(len(self.db.recent_updates(hours=1)), 1)
+        self.assertEqual(len(self.db.recent_updates(hours=24*30)), 2)
+
+    def test_column_name_access(self):
+        uid = self.db.insert_update(ticker="HATSUN", source="t", type_="news",
+                                    headline="Q4 results", body="", url=None)
+        self.db.insert_analysis(update_id=uid, ticker="HATSUN",
+                                impact="positive", urgency="high",
+                                thesis_effect="strengthens", action="hold",
+                                reasoning="r", follow_ups=[])
+        rows = self.db.feed_rows(limit=5)
+        # Critical: dict-style column access must keep working
+        self.assertEqual(rows[0]["headline"], "Q4 results")
+        self.assertEqual(rows[0]["impact"], "positive")
+        self.assertEqual(rows[0]["ticker"], "HATSUN")
+
+
 class HoldingsOverrideTest(unittest.TestCase):
     """Holdings can be added/removed via JSON override at data/holdings_override.json."""
 

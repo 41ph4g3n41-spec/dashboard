@@ -138,6 +138,32 @@ sudo systemctl restart research-scheduler research-telegram research-dashboard
 
 ---
 
+## Shared database with Streamlit Cloud (recommended)
+
+If you also want to run the dashboard on **Streamlit Cloud** (free public URL),
+add a hosted Turso database so VPS + Cloud share data. Setup:
+
+1. Sign up at **https://turso.tech** (free) → create a DB in the **Mumbai (bom)**
+   region.
+2. Copy the **Database URL** (`libsql://...`) and an **Auth Token**.
+3. Add to `.env` on the VPS:
+   ```
+   TURSO_DATABASE_URL=libsql://research-<your-org>.turso.io
+   TURSO_AUTH_TOKEN=...
+   TURSO_SYNC_INTERVAL=30
+   ```
+4. Add the same to Streamlit Cloud (App ▸ Settings ▸ Secrets).
+5. Restart services (`docker compose restart` or `systemctl restart`).
+
+Both nodes use libsql-experimental's embedded-replica mode: local SQLite file
+that auto-syncs to Turso every 30 s. Reads stay fast, writes propagate to
+the other node within seconds. Full guide: [STREAMLIT_CLOUD.md](./STREAMLIT_CLOUD.md).
+
+If `TURSO_DATABASE_URL` is unset, the system silently falls back to a
+local-only SQLite file — no code changes needed.
+
+---
+
 ## Security tips for both paths
 
 1. **Don't expose Streamlit publicly.** No login wall. Always SSH-tunnel.

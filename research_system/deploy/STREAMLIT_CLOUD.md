@@ -69,19 +69,50 @@ phone home screen — it's now a one-tap research console.
 
 ---
 
-## Recommended hybrid setup (best of both worlds)
+## Recommended hybrid setup (Streamlit Cloud + VPS + shared Turso DB)
+
+This is the **best architecture**: phone-friendly free dashboard + always-on
+fetchers + bot, all reading from one shared database.
 
 | Component | Where | Why |
 |---|---|---|
-| Dashboard | **Streamlit Cloud** | free, public URL, phone-friendly |
+| Dashboard | **Streamlit Cloud** (free) | free public URL, phone-friendly |
 | Scheduler | **VPS** (DEPLOY.md path A or B) | needs to run 24/7 |
 | Telegram bot | **VPS** | needs long-lived process |
-| SQLite DB | **VPS** | one source of truth |
+| Database | **Turso** hosted libSQL (free 5 GB) | shared between Cloud and VPS |
 
-In hybrid mode the Streamlit Cloud dashboard runs without a persistent DB
-of its own — manual fetches work on-demand but won't see history from the
-VPS. To share data, you'd need to swap SQLite for a hosted database
-(Turso/libSQL, Supabase, Neon Postgres). Ask if you want that wired up.
+### Turso wiring (one-time, 3 minutes)
+
+1. Go to **https://turso.tech** → sign in with GitHub → free plan.
+2. Click **Create Database** → name it `research` → region `bom` (Mumbai) → Create.
+3. On the database page click **Connect** → copy the **Database URL**
+   (looks like `libsql://research-<your-org>.turso.io`).
+4. Click **Generate Token** → copy the **Auth Token**.
+5. Add both to your `.env` on the VPS:
+   ```
+   TURSO_DATABASE_URL=libsql://research-<your-org>.turso.io
+   TURSO_AUTH_TOKEN=eyJhbGciOiJF...
+   ```
+6. Add the same two to your Streamlit Cloud secrets (App ▸ Settings ▸ Secrets):
+   ```toml
+   TURSO_DATABASE_URL  = "libsql://research-<your-org>.turso.io"
+   TURSO_AUTH_TOKEN    = "eyJhbGciOiJF..."
+   TURSO_SYNC_INTERVAL = "30"
+   ```
+7. Restart the VPS scheduler (`docker compose restart` or `systemctl restart`)
+   and re-deploy Streamlit Cloud. Both now read/write the same DB.
+
+### How it works under the hood
+
+`libsql-experimental`'s **embedded replica mode** keeps a local SQLite file
+on each side and syncs it to Turso every `TURSO_SYNC_INTERVAL` seconds. Reads
+hit the local file (fast); writes go to local + queued for sync.
+
+So the **VPS scheduler writes** → Turso → **Streamlit Cloud reads** within
+~30 s. The Telegram bot also reads from the same shared state.
+
+If `TURSO_DATABASE_URL` is unset anywhere, that node falls back to a
+local-only SQLite file. No code changes needed.
 
 ---
 

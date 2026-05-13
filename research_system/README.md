@@ -36,13 +36,18 @@ cp .env.example .env
 python -m research_system.db          # creates SQLite at data/research.db
 ```
 
-## Three ways to run this
+## Four ways to run this
 
-| Mode | Setup time | Cost | Always-on | Persistent history | Telegram bot |
+| Mode | Setup time | Cost | Always-on | History | Telegram bot |
 |---|---|---|---|---|---|
-| **Streamlit Cloud** (free) | 5 min | ₹0 | sleeps after 7d | no | no |
-| **Local laptop** | 5 min | ₹0 | only when laptop awake | yes | yes |
-| **$5 VPS** (Docker / systemd) | 15 min | ~₹500/mo | ✓ | yes | yes |
+| **Streamlit Cloud only** | 5 min | ₹0 | sleeps after 7d | ephemeral | no |
+| **Local laptop only** | 5 min | ₹0 | only when awake | yes | yes |
+| **$5 VPS only** | 15 min | ~₹500/mo | ✓ | yes | yes |
+| **VPS + Cloud + Turso** ⭐ | 20 min | ~₹500/mo | ✓ | yes | yes |
+
+The starred row is the **recommended setup**: VPS runs scheduler + Telegram
+bot 24/7, Streamlit Cloud hosts the public dashboard, both share a free
+Turso database. Phone-friendly, no SSH tunnel needed for the dashboard.
 
 - **Free public phone/laptop URL** → see **[deploy/STREAMLIT_CLOUD.md](deploy/STREAMLIT_CLOUD.md)**
 - **24/7 with scheduler + bot** → see **[deploy/DEPLOY.md](deploy/DEPLOY.md)**
