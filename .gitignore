@@ -1,0 +1,14 @@
+.env
+.streamlit/secrets.toml
+*.db
+*.sqlite
+*.sqlite3
+__pycache__/
+*.pyc
+.venv/
+venv/
+logs/*.log
+research_system/data/*.json
+research_system/data/*.db
+research_system/logs/*.log
+.DS_Store

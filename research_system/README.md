@@ -36,7 +36,18 @@ cp .env.example .env
 python -m research_system.db          # creates SQLite at data/research.db
 ```
 
-## 24/7 cloud deploy (recommended once you're committed)
+## Three ways to run this
+
+| Mode | Setup time | Cost | Always-on | Persistent history | Telegram bot |
+|---|---|---|---|---|---|
+| **Streamlit Cloud** (free) | 5 min | ₹0 | sleeps after 7d | no | no |
+| **Local laptop** | 5 min | ₹0 | only when laptop awake | yes | yes |
+| **$5 VPS** (Docker / systemd) | 15 min | ~₹500/mo | ✓ | yes | yes |
+
+- **Free public phone/laptop URL** → see **[deploy/STREAMLIT_CLOUD.md](deploy/STREAMLIT_CLOUD.md)**
+- **24/7 with scheduler + bot** → see **[deploy/DEPLOY.md](deploy/DEPLOY.md)**
+
+## 24/7 cloud deploy
 
 See **[deploy/DEPLOY.md](deploy/DEPLOY.md)** for the full guide.
 One-liner on a fresh Ubuntu VPS:
