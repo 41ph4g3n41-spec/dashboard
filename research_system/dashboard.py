@@ -23,7 +23,7 @@ import pandas as pd
 import streamlit as st
 
 from .analyzer import analyze_text, explain_move, run as run_analyzer
-from .config import PORTFOLIO, UNIVERSE, WATCHLIST
+from .config import PORTFOLIO, UNIVERSE, WATCHLIST, save_overrides
 from .db import (
     connect,
     ensure_db,
@@ -133,6 +133,7 @@ TABS = [
     "Results Calendar",
     "Why Is X Moving",
     "Analyze (paste)",
+    "Holdings",
 ]
 tabs = st.tabs(TABS)
 
@@ -362,3 +363,56 @@ with tabs[7]:
                 out = None
         if out:
             st.json(out)
+
+
+# --- 9. Holdings editor -------------------------------------------------
+with tabs[8]:
+    st.subheader("Holdings editor — add / remove tickers without touching code")
+    st.caption("Edits write to data/holdings_override.json. Restart "
+               "scheduler/dashboard after changes for fetchers to pick them up.")
+
+    st.markdown("#### Add a holding")
+    with st.form("add_holding", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        tk = c1.text_input("Ticker (your shorthand)", max_chars=12,
+                           help="e.g. RELIANCE, TCS")
+        bucket = c1.selectbox("Bucket", ["portfolio", "watchlist"])
+        nse = c2.text_input("NSE symbol", help="e.g. RELIANCE")
+        bse = c2.text_input("BSE scrip code (optional)", help="e.g. 500325")
+        yahoo = c3.text_input("Yahoo symbol", help="e.g. RELIANCE.NS")
+        sector = c3.text_input("Sector", help="free text e.g. Energy / Oil & Gas")
+        name = st.text_input("Full company name")
+        aliases = st.text_input("Aliases (comma-separated)",
+                                help="news headlines often use other names")
+        submitted = st.form_submit_button("Save holding")
+        if submitted:
+            if not tk or not nse:
+                st.error("Ticker and NSE symbol are required.")
+            else:
+                meta = {
+                    "name": name or tk,
+                    "sector": sector,
+                    "nse": nse.upper(),
+                    "bse_code": bse or None,
+                    "yahoo": yahoo or f"{nse.upper()}.NS",
+                    "aliases": [a.strip() for a in aliases.split(",") if a.strip()],
+                }
+                key = tk.upper()
+                if bucket == "portfolio":
+                    save_overrides(portfolio={key: meta})
+                else:
+                    save_overrides(watchlist={key: meta})
+                st.success(f"Saved {key} to {bucket}. Restart processes to apply.")
+
+    st.markdown("#### Remove a holding")
+    rm = st.selectbox("Pick a ticker to remove",
+                      ["(none)"] + sorted(UNIVERSE.keys()), key="rm_sel")
+    if st.button("Remove", type="secondary") and rm != "(none)":
+        save_overrides(remove=[rm])
+        st.success(f"Marked {rm} for removal. Restart processes to apply.")
+
+    st.markdown("#### Current universe")
+    st.write({
+        "Portfolio": sorted(PORTFOLIO.keys()),
+        "Watchlist": sorted(WATCHLIST.keys()),
+    })

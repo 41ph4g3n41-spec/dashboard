@@ -23,19 +23,20 @@ def _telegram_enabled() -> bool:
     return bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
 
 
-def telegram_send(text: str, parse_mode: str = "Markdown") -> bool:
+def telegram_send(text: str, parse_mode: str | None = None) -> bool:
+    """Send Telegram message. Plain text by default — Markdown breaks on
+    common chars (_ * [ ] in tickers/URLs). Pass parse_mode='HTML' if needed."""
     if not _telegram_enabled():
         return False
     tok = os.getenv("TELEGRAM_BOT_TOKEN")
     chat = os.getenv("TELEGRAM_CHAT_ID")
     url = f"https://api.telegram.org/bot{tok}/sendMessage"
+    payload = {"chat_id": chat, "text": text[:4000],
+               "disable_web_page_preview": "true"}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
-        r = requests.post(
-            url,
-            data={"chat_id": chat, "text": text[:4000], "parse_mode": parse_mode,
-                  "disable_web_page_preview": True},
-            timeout=15,
-        )
+        r = requests.post(url, data=payload, timeout=15)
         ok = r.status_code == 200
         if not ok:
             log.warning("telegram send %s: %s", r.status_code, r.text[:200])
@@ -51,13 +52,13 @@ def send_high_alert(update_row, analysis: dict) -> None:
     src = update_row["source"]
     url = update_row["url"] or ""
     msg = (
-        f"*HIGH URGENCY — {ticker}*\n"
+        f"⚠️ HIGH URGENCY — {ticker}\n"
         f"{head}\n\n"
-        f"*Impact:* {analysis['impact']}  "
-        f"*Thesis:* {analysis['thesis_effect']}  "
-        f"*Action:* {analysis['action']}\n"
+        f"Impact: {analysis['impact']}  "
+        f"Thesis: {analysis['thesis_effect']}  "
+        f"Action: {analysis['action']}\n"
         f"{analysis['reasoning']}\n\n"
-        f"_source: {src}_\n{url}"
+        f"source: {src}\n{url}"
     )
     telegram_send(msg)
 

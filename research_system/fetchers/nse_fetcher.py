@@ -34,21 +34,22 @@ def _warmup(session: requests.Session) -> None:
 
 def _safe_get_json(session: requests.Session, url: str, params: dict,
                    tries: int = 3) -> dict | list | None:
-    last_exc = None
+    last_exc: Exception | None = None
     for attempt in range(tries):
         try:
             r = session.get(url, params=params, timeout=20)
-            if r.status_code == 401 or r.status_code == 403:
+            if r.status_code in (401, 403):
+                # cookie likely expired — warm up and retry
                 _warmup(session)
+                time.sleep(0.8)
+                last_exc = requests.HTTPError(f"{r.status_code} on {url}")
                 continue
             r.raise_for_status()
             return r.json()
         except (requests.RequestException, ValueError) as e:
             last_exc = e
-            log.warning("NSE GET failed (%s) %s; retrying", e, url)
             time.sleep(1.5 * (attempt + 1))
-            _warmup(session)
-    log.error("NSE GET giving up %s: %s", url, last_exc)
+    log.warning("NSE GET giving up %s: %s", url, last_exc)
     return None
 
 

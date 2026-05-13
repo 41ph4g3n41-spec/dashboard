@@ -72,7 +72,11 @@ CREATE TABLE IF NOT EXISTS prices (
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    """UTC timestamp in SQLite-friendly format: 'YYYY-MM-DD HH:MM:SS'.
+    Must match the format SQLite's datetime() returns so that
+    string comparisons in WHERE clauses behave as date comparisons.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def make_dedupe_key(source: str, url: str | None, headline: str) -> str:

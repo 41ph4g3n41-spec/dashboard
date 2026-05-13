@@ -34,6 +34,7 @@ MACRO_TICKERS = {
 
 def snapshot_universe() -> int:
     """Pull last 5d daily OHLCV for the whole universe. Returns # rows written."""
+    import pandas as pd
     syms = [m["yahoo"] for m in UNIVERSE.values() if m.get("yahoo")]
     sym_to_ticker = {m["yahoo"]: tk for tk, m in UNIVERSE.items() if m.get("yahoo")}
     if not syms:
@@ -52,24 +53,38 @@ def snapshot_universe() -> int:
         log.error("yfinance snapshot failed: %s", e)
         return 0
 
+    if df is None or df.empty:
+        log.warning("yfinance returned empty frame")
+        return 0
+
+    is_multi = isinstance(df.columns, pd.MultiIndex)
     rows = 0
     for sym in syms:
         try:
-            sub = df[sym] if isinstance(df.columns, type(df.columns)) and sym in df.columns.get_level_values(0) else df
-        except Exception:
-            sub = None
-        if sub is None or getattr(sub, "empty", True):
+            if is_multi:
+                if sym not in df.columns.get_level_values(0):
+                    continue
+                sub = df[sym].dropna(how="all")
+            else:
+                sub = df.dropna(how="all")
+        except Exception as e:
+            log.debug("slice %s skip: %s", sym, e)
+            continue
+        if sub is None or sub.empty:
             continue
         for asof, r in sub.iterrows():
             try:
+                close = r.get("Close")
+                if pd.isna(close):
+                    continue
                 upsert_price(
                     ticker=sym_to_ticker[sym],
                     asof=asof.strftime("%Y-%m-%d"),
-                    o=float(r.get("Open", 0) or 0),
-                    h=float(r.get("High", 0) or 0),
-                    l=float(r.get("Low", 0) or 0),
-                    c=float(r.get("Close", 0) or 0),
-                    v=int(r.get("Volume", 0) or 0),
+                    o=float(r.get("Open") or 0),
+                    h=float(r.get("High") or 0),
+                    l=float(r.get("Low") or 0),
+                    c=float(close),
+                    v=int(r.get("Volume") or 0),
                 )
                 rows += 1
             except Exception as e:

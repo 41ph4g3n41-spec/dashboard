@@ -45,6 +45,17 @@ def _client():
     return Anthropic(api_key=api_key)
 
 
+def _resp_text(resp) -> str:
+    """Extract the text from an Anthropic Messages response, robust to
+    multiple content blocks or non-text blocks."""
+    parts: list[str] = []
+    for block in (resp.content or []):
+        t = getattr(block, "text", None)
+        if t:
+            parts.append(t)
+    return "".join(parts).strip()
+
+
 # ---------------------------- prompt builders ---------------------------
 
 def _thesis_block(ticker: str | None) -> str:
@@ -107,17 +118,43 @@ Rules:
 """
 
 
-_JSON_RE = re.compile(r"\{[\s\S]*\}")
-
-
 def _extract_json(s: str) -> dict[str, Any]:
-    s = s.strip()
-    if s.startswith("```"):
-        s = re.sub(r"^```(?:json)?\s*|\s*```$", "", s, flags=re.IGNORECASE)
-    m = _JSON_RE.search(s)
-    if not m:
-        raise ValueError(f"no JSON in response: {s[:200]}")
-    return json.loads(m.group(0))
+    """Pull the first valid top-level JSON object out of an LLM response.
+    Handles ```json fences, leading/trailing prose, and avoids the greedy-regex
+    pitfall when multiple JSON-shaped strings appear."""
+    s = (s or "").strip()
+    # Strip code-fence wrappers
+    s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s*```\s*$", "", s)
+    # Brace-balanced scan for the first {...} object
+    start = s.find("{")
+    while start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(s)):
+            ch = s[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(s[start:i + 1])
+                        except json.JSONDecodeError:
+                            break  # bad candidate — search for next '{'
+        start = s.find("{", start + 1)
+    raise ValueError(f"no JSON object in response: {s[:200]}")
 
 
 # ---------------------------- core API ----------------------------------
@@ -138,7 +175,7 @@ def analyze_update_row(row) -> dict | None:
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = resp.content[0].text
+        text = _resp_text(resp)
         data = _extract_json(text)
     except Exception as e:
         log.error("Claude call failed for update %s: %s", row["id"], e)
@@ -214,7 +251,7 @@ def analyze_text(ticker: str | None, text: str) -> dict:
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
-    return _extract_json(resp.content[0].text)
+    return _extract_json(_resp_text(resp))
 
 
 # -------------------- on-demand: explain today's move -------------------
@@ -266,7 +303,7 @@ No prose outside JSON."""
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_prompt}],
     )
-    out = _extract_json(resp.content[0].text)
+    out = _extract_json(_resp_text(resp))
     out["_move"] = move
     out["_macro"] = macros
     out["_updates_used"] = len(updates)

@@ -109,15 +109,17 @@ Markdown. No filler sentences. Each section short and punchy."""
         system=SYSTEM,
         messages=[{"role": "user", "content": user_prompt}],
     )
-    text = resp.content[0].text.strip()
+    text = "".join(
+        getattr(b, "text", "") for b in (resp.content or [])
+    ).strip()
 
     date_str = now_ist.strftime("%Y-%m-%d")
     upsert_brief(date_str, text)
     log.info("morning brief stored for %s (%d chars)", date_str, len(text))
 
-    # Optional pushes
+    # Optional pushes — plain text (telegram Markdown breaks on _, *, etc)
     try:
-        telegram_send(f"*Morning Brief — {date_str}*\n\n{text}", parse_mode="Markdown")
+        telegram_send(f"📰 Morning Brief — {date_str}\n\n{text}")
     except Exception as e:
         log.debug("telegram skip: %s", e)
     try:

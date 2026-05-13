@@ -1,10 +1,19 @@
-"""Universe, tickers, BSE scrip mapping, sector keywords."""
+"""Universe, tickers, BSE scrip mapping, sector keywords.
 
+Defaults are coded here. Live edits made from the dashboard's "Holdings"
+tab are merged in from `data/holdings_override.json` at import time.
+"""
+
+import json
+import logging
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "data" / "research.db"
 LOG_DIR = ROOT / "logs"
+HOLDINGS_OVERRIDE_PATH = ROOT / "data" / "holdings_override.json"
+
+log = logging.getLogger("config")
 
 # ---------------------------------------------------------------
 # Portfolio (9) — held positions
@@ -162,6 +171,56 @@ WATCHLIST = {
     },
 }
 
+def _apply_overrides() -> None:
+    """Merge dashboard-side edits from data/holdings_override.json.
+    Expected shape:
+      {
+        "portfolio": { "TICKER": {...} },     # added/edited holdings
+        "watchlist": { "TICKER": {...} },
+        "remove":    ["TICKER1", ...]          # remove from both
+      }
+    """
+    try:
+        if not HOLDINGS_OVERRIDE_PATH.exists():
+            return
+        data = json.loads(HOLDINGS_OVERRIDE_PATH.read_text())
+    except Exception as e:
+        log.warning("holdings_override.json parse failed: %s", e)
+        return
+    for tk, meta in (data.get("portfolio") or {}).items():
+        PORTFOLIO[tk.upper()] = meta
+        WATCHLIST.pop(tk.upper(), None)
+    for tk, meta in (data.get("watchlist") or {}).items():
+        WATCHLIST[tk.upper()] = meta
+        PORTFOLIO.pop(tk.upper(), None)
+    for tk in (data.get("remove") or []):
+        PORTFOLIO.pop(tk.upper(), None)
+        WATCHLIST.pop(tk.upper(), None)
+
+
+def save_overrides(*, portfolio: dict | None = None,
+                   watchlist: dict | None = None,
+                   remove: list[str] | None = None) -> None:
+    HOLDINGS_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing: dict = {}
+    if HOLDINGS_OVERRIDE_PATH.exists():
+        try:
+            existing = json.loads(HOLDINGS_OVERRIDE_PATH.read_text())
+        except Exception:
+            existing = {}
+    existing.setdefault("portfolio", {})
+    existing.setdefault("watchlist", {})
+    existing.setdefault("remove", [])
+    if portfolio:
+        existing["portfolio"].update(portfolio)
+    if watchlist:
+        existing["watchlist"].update(watchlist)
+    if remove:
+        existing["remove"] = list(set(existing["remove"]) | set(remove))
+    HOLDINGS_OVERRIDE_PATH.write_text(json.dumps(existing, indent=2))
+
+
+_apply_overrides()
 UNIVERSE = {**PORTFOLIO, **WATCHLIST}
 
 # ---------------------------------------------------------------
