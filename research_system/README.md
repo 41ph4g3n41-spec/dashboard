@@ -36,7 +36,21 @@ cp .env.example .env
 python -m research_system.db          # creates SQLite at data/research.db
 ```
 
-## Run the system (3 terminals)
+## 24/7 cloud deploy (recommended once you're committed)
+
+See **[deploy/DEPLOY.md](deploy/DEPLOY.md)** for the full guide.
+One-liner on a fresh Ubuntu VPS:
+
+```bash
+git clone <your fork> && cd dashboard
+bash research_system/deploy/install.sh
+```
+
+The script installs Docker, asks for your secrets, and starts three
+always-on containers: scheduler, Telegram bot, dashboard. SSH-tunnel
+the dashboard to your laptop (port 8501).
+
+## Run on your laptop (3 terminals)
 
 ```bash
 # 1) scheduler — fetches, dedupes, analyses every 5–30 min

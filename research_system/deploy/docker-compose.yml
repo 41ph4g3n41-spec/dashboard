@@ -1,0 +1,83 @@
+# 24/7 cloud deploy.
+# Pre-req on the host (one-liner below in DEPLOY.md):
+#   - Docker installed
+#   - .env file next to this docker-compose.yml (or in repo root)
+#
+# Usage from repo root:
+#   docker compose -f research_system/deploy/docker-compose.yml --env-file .env up -d --build
+#   docker compose -f research_system/deploy/docker-compose.yml logs -f
+#   docker compose -f research_system/deploy/docker-compose.yml down
+
+services:
+  scheduler:
+    build:
+      context: ../..
+      dockerfile: research_system/deploy/Dockerfile
+    image: research-monitor:latest
+    container_name: research-scheduler
+    command: ["scheduler"]
+    env_file: ../../.env
+    restart: unless-stopped
+    volumes:
+      - research-data:/app/research_system/data
+      - research-logs:/app/research_system/logs
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import sqlite3; sqlite3.connect('/app/research_system/data/research.db').execute('SELECT 1').fetchone()\""
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  telegram:
+    image: research-monitor:latest
+    container_name: research-telegram
+    command: ["telegram"]
+    env_file: ../../.env
+    restart: unless-stopped
+    depends_on:
+      - scheduler
+    volumes:
+      - research-data:/app/research_system/data
+      - research-logs:/app/research_system/logs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  dashboard:
+    image: research-monitor:latest
+    container_name: research-dashboard
+    command: ["dashboard"]
+    env_file: ../../.env
+    restart: unless-stopped
+    depends_on:
+      - scheduler
+    ports:
+      # Bind to loopback only — access via SSH tunnel:
+      #   ssh -L 8501:127.0.0.1:8501 user@vps
+      # Then open http://localhost:8501 on your laptop.
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - research-data:/app/research_system/data
+      - research-logs:/app/research_system/logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8501/"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  research-data:
+  research-logs:

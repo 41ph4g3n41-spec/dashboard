@@ -1,0 +1,21 @@
+[Unit]
+Description=India Research Monitor — scheduler (fetchers + analyser cron)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# === EDIT THESE TWO LINES ===
+User=ubuntu
+WorkingDirectory=/home/ubuntu/dashboard
+# ============================
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/ubuntu/dashboard/.env
+ExecStart=/home/ubuntu/dashboard/research_system/.venv/bin/python -m research_system.scheduler
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/var/log/research-scheduler.log
+StandardError=append:/var/log/research-scheduler.log
+
+[Install]
+WantedBy=multi-user.target
