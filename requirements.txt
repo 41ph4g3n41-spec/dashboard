@@ -1,5 +1,7 @@
 # Streamlit Community Cloud reads this file at the repo root.
-# Mirrors research_system/requirements.txt — keep them in sync.
+# This is the lean set — no native-build deps so the Cloud build never fails.
+# For the VPS / Docker deploy, use research_system/requirements.txt which
+# also pulls in libsql-experimental for Turso sync.
 anthropic>=0.40.0
 google-genai>=0.3.0
 streamlit>=1.32.0
@@ -13,4 +15,3 @@ beautifulsoup4>=4.12.3
 lxml>=5.1.0
 pytz>=2024.1
 tzdata>=2024.1
-libsql-experimental>=0.0.40
