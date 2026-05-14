@@ -1,6 +1,7 @@
 # Streamlit Community Cloud reads this file at the repo root.
 # Mirrors research_system/requirements.txt — keep them in sync.
 anthropic>=0.40.0
+google-genai>=0.3.0
 streamlit>=1.32.0
 APScheduler>=3.10.4
 feedparser>=6.0.11

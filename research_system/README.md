@@ -24,6 +24,18 @@ Streamlit dashboard on your laptop, interactive Telegram bot for your phone.
 | Streamlit dashboard (9 tabs) | `dashboard.py` |
 | Offline test suite (23 tests) | `tests/test_smoke.py` |
 
+## Pick an LLM provider
+
+Set `LLM_PROVIDER` in `.env` (or Streamlit secrets):
+
+| Provider | Cost | Quality | Free tier | Get a key |
+|---|---|---|---|---|
+| `anthropic` (default) | pay-per-use | best | $5 trial credit | https://console.anthropic.com |
+| `gemini` | **free** | excellent | 500 req/day, 250K tokens/min, no card | https://aistudio.google.com/apikey |
+
+The whole system runs on either — analyzer, morning brief, "why is X moving",
+ad-hoc analyze panel. Switch any time, no code changes.
+
 ## One-time setup
 
 ```bash

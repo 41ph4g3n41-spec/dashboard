@@ -21,10 +21,10 @@ from .alerts import email_send, telegram_send
 from .config import UNIVERSE
 from .db import recent_analyses, recent_updates, upsert_brief
 from .fetchers.price_fetcher import macro_snapshot
+from .llm import complete as llm_complete
 
 load_dotenv()
 log = logging.getLogger("morning_brief")
-MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 IST = ZoneInfo("Asia/Kolkata")
 
 
@@ -71,10 +71,6 @@ def _portfolio_list() -> str:
 
 
 def build_and_store(now_ist: datetime | None = None) -> str:
-    from anthropic import Anthropic
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY missing")
     now_ist = now_ist or datetime.now(IST)
 
     macro = macro_snapshot()
@@ -102,16 +98,7 @@ Produce the morning brief in this exact structure:
 
 Markdown. No filler sentences. Each section short and punchy."""
 
-    client = Anthropic(api_key=api_key)
-    resp = client.messages.create(
-        model=MODEL,
-        max_tokens=1400,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": user_prompt}],
-    )
-    text = "".join(
-        getattr(b, "text", "") for b in (resp.content or [])
-    ).strip()
+    text = llm_complete(system=SYSTEM, prompt=user_prompt, max_tokens=1400)
 
     date_str = now_ist.strftime("%Y-%m-%d")
     upsert_brief(date_str, text)

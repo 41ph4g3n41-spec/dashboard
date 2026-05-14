@@ -300,6 +300,66 @@ class LibsqlBackendTest(unittest.TestCase):
         self.assertEqual(rows[0]["ticker"], "HATSUN")
 
 
+class LLMProviderTest(unittest.TestCase):
+    """Verify llm.complete dispatches to the right backend without making
+    a real API call. We patch the underlying client factories."""
+
+    def setUp(self):
+        from research_system import llm
+        self.llm = llm
+        # Clear lru_caches so each test gets a fresh client
+        llm._anthropic_client.cache_clear()
+        llm._gemini_client.cache_clear()
+
+    def test_default_is_anthropic(self):
+        with mock.patch.dict(os.environ, {"LLM_PROVIDER": "",
+                                          "ANTHROPIC_API_KEY": "k"}, clear=False):
+            self.assertEqual(self.llm.provider_info()["provider"], "anthropic")
+
+    def test_gemini_when_set(self):
+        with mock.patch.dict(os.environ, {"LLM_PROVIDER": "gemini",
+                                          "GEMINI_API_KEY": "k"}, clear=False):
+            info = self.llm.provider_info()
+            self.assertEqual(info["provider"], "gemini")
+            self.assertTrue(info["model"].startswith("gemini"))
+
+    def test_anthropic_dispatch(self):
+        fake = mock.MagicMock()
+        fake.messages.create.return_value.content = [
+            mock.MagicMock(text='{"impact":"positive","urgency":"low"}')
+        ]
+        with mock.patch.dict(os.environ, {"LLM_PROVIDER": "anthropic",
+                                          "ANTHROPIC_API_KEY": "k"}, clear=False), \
+             mock.patch.object(self.llm, "_anthropic_client", return_value=fake):
+            out = self.llm.complete(system="s", prompt="p", max_tokens=100)
+            self.assertIn("impact", out)
+            fake.messages.create.assert_called_once()
+
+    def test_gemini_dispatch(self):
+        fake = mock.MagicMock()
+        fake.models.generate_content.return_value.text = '{"impact":"neutral"}'
+        with mock.patch.dict(os.environ, {"LLM_PROVIDER": "gemini",
+                                          "GEMINI_API_KEY": "k"}, clear=False), \
+             mock.patch.object(self.llm, "_gemini_client", return_value=fake):
+            out = self.llm.complete(system="s", prompt="p", max_tokens=100)
+            self.assertIn("neutral", out)
+            fake.models.generate_content.assert_called_once()
+
+    def test_anthropic_missing_key_raises(self):
+        with mock.patch.dict(os.environ, {"LLM_PROVIDER": "anthropic",
+                                          "ANTHROPIC_API_KEY": ""}, clear=False):
+            self.llm._anthropic_client.cache_clear()
+            with self.assertRaises(RuntimeError):
+                self.llm.complete(system="s", prompt="p")
+
+    def test_gemini_missing_key_raises(self):
+        with mock.patch.dict(os.environ, {"LLM_PROVIDER": "gemini",
+                                          "GEMINI_API_KEY": ""}, clear=False):
+            self.llm._gemini_client.cache_clear()
+            with self.assertRaises(RuntimeError):
+                self.llm.complete(system="s", prompt="p")
+
+
 class HoldingsOverrideTest(unittest.TestCase):
     """Holdings can be added/removed via JSON override at data/holdings_override.json."""
 

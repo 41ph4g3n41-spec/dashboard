@@ -25,10 +25,10 @@ if str(ROOT) not in sys.path:
 # ---- Bridge Streamlit Cloud secrets into os.environ --------------------
 # Set these in your Streamlit Cloud app: Settings → Secrets (TOML format)
 _SECRET_KEYS = (
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_MODEL",
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID",
+    "LLM_PROVIDER",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+    "GEMINI_API_KEY", "GEMINI_MODEL",
+    "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
     "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "EMAIL_TO",
     "TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "TURSO_SYNC_INTERVAL",
 )
@@ -40,13 +40,20 @@ except Exception:
     # Local laptop run: st.secrets may not exist — fall back to .env via python-dotenv
     pass
 
-if not os.environ.get("ANTHROPIC_API_KEY"):
+_provider = (os.environ.get("LLM_PROVIDER") or "anthropic").lower()
+_provider_ok = (
+    (_provider == "anthropic" and os.environ.get("ANTHROPIC_API_KEY")) or
+    (_provider == "gemini" and os.environ.get("GEMINI_API_KEY"))
+)
+if not _provider_ok:
     st.error(
-        "ANTHROPIC_API_KEY not set.\n\n"
-        "**On Streamlit Cloud** — add it under  "
-        "*App ▸ Settings ▸ Secrets* in TOML format:\n\n"
-        "```toml\nANTHROPIC_API_KEY = \"sk-ant-...\"\n```\n\n"
-        "**Locally** — put it in `.env`."
+        f"No API key set for LLM_PROVIDER={_provider!r}.\n\n"
+        "**On Streamlit Cloud** — App ▸ Settings ▸ Secrets, paste either:\n\n"
+        "```toml\nLLM_PROVIDER = \"anthropic\"\n"
+        "ANTHROPIC_API_KEY = \"sk-ant-...\"\n```\n\n"
+        "or (free):\n\n"
+        "```toml\nLLM_PROVIDER = \"gemini\"\n"
+        "GEMINI_API_KEY = \"...\"  # https://aistudio.google.com/apikey\n```"
     )
     st.stop()
 

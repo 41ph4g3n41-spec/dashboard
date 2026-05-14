@@ -1,8 +1,8 @@
-"""Claude-powered update analyzer.
+"""LLM-powered update analyzer (Anthropic or Gemini — pick via LLM_PROVIDER).
 
 For each unprocessed update row:
   1. Build a thesis-aware prompt
-  2. Call Claude Sonnet 4.5
+  2. Call the configured LLM provider via research_system.llm.complete
   3. Parse JSON, store in `analyses`, mark update processed
   4. If urgency=high, hand off to alerts
 
@@ -29,31 +29,11 @@ from .db import (
     recent_updates,
     unprocessed_updates,
 )
+from .llm import complete as llm_complete
 from .theses import thesis_for
 
 load_dotenv()
 log = logging.getLogger("analyzer")
-
-MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
-
-
-def _client():
-    from anthropic import Anthropic
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set. Add it to .env")
-    return Anthropic(api_key=api_key)
-
-
-def _resp_text(resp) -> str:
-    """Extract the text from an Anthropic Messages response, robust to
-    multiple content blocks or non-text blocks."""
-    parts: list[str] = []
-    for block in (resp.content or []):
-        t = getattr(block, "text", None)
-        if t:
-            parts.append(t)
-    return "".join(parts).strip()
 
 
 # ---------------------------- prompt builders ---------------------------
@@ -167,18 +147,11 @@ def analyze_update_row(row) -> dict | None:
         headline=row["headline"],
         body=row["body"],
     )
-    client = _client()
     try:
-        resp = client.messages.create(
-            model=MODEL,
-            max_tokens=600,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = _resp_text(resp)
+        text = llm_complete(system=SYSTEM_PROMPT, prompt=prompt, max_tokens=600)
         data = _extract_json(text)
     except Exception as e:
-        log.error("Claude call failed for update %s: %s", row["id"], e)
+        log.error("LLM call failed for update %s: %s", row["id"], e)
         return None
 
     impact = (data.get("impact") or "neutral").lower()
@@ -244,14 +217,8 @@ def analyze_text(ticker: str | None, text: str) -> dict:
         headline=text.split("\n", 1)[0][:300],
         body=text,
     )
-    client = _client()
-    resp = client.messages.create(
-        model=MODEL,
-        max_tokens=700,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return _extract_json(_resp_text(resp))
+    text = llm_complete(system=SYSTEM_PROMPT, prompt=prompt, max_tokens=700)
+    return _extract_json(text)
 
 
 # -------------------- on-demand: explain today's move -------------------
@@ -296,14 +263,8 @@ Return JSON with keys:
 }}
 No prose outside JSON."""
 
-    client = _client()
-    resp = client.messages.create(
-        model=MODEL,
-        max_tokens=600,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_prompt}],
-    )
-    out = _extract_json(_resp_text(resp))
+    text = llm_complete(system=SYSTEM_PROMPT, prompt=user_prompt, max_tokens=600)
+    out = _extract_json(text)
     out["_move"] = move
     out["_macro"] = macros
     out["_updates_used"] = len(updates)
