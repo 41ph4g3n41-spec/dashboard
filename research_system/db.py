@@ -127,7 +127,16 @@ class _LibsqlConn:
 
 
 def _open_libsql() -> _LibsqlConn:
-    import libsql_experimental as libsql
+    try:
+        import libsql_experimental as libsql
+    except ImportError as e:
+        raise RuntimeError(
+            "TURSO_DATABASE_URL is set but libsql-experimental isn't installed. "
+            "Either:\n"
+            "  • install it:  pip install libsql-experimental\n"
+            "  • or unset TURSO_DATABASE_URL to use local SQLite\n"
+            f"(import error: {e})"
+        ) from e
     url = os.environ["TURSO_DATABASE_URL"]
     token = os.environ.get("TURSO_AUTH_TOKEN", "")
     # Local replica file lives next to the regular DB
