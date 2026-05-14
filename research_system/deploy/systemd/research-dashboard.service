@@ -1,0 +1,21 @@
+[Unit]
+Description=India Research Monitor — Streamlit dashboard
+After=network-online.target research-scheduler.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# === EDIT THESE TWO LINES ===
+User=ubuntu
+WorkingDirectory=/home/ubuntu/dashboard
+# ============================
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/ubuntu/dashboard/.env
+ExecStart=/home/ubuntu/dashboard/research_system/.venv/bin/streamlit run /home/ubuntu/dashboard/research_system/dashboard.py --server.address 127.0.0.1 --server.port 8501 --server.headless true --browser.gatherUsageStats false
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/var/log/research-dashboard.log
+StandardError=append:/var/log/research-dashboard.log
+
+[Install]
+WantedBy=multi-user.target
