@@ -22,7 +22,6 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
-from .analyzer import analyze_text, explain_move, run as run_analyzer
 from .config import PORTFOLIO, UNIVERSE, WATCHLIST, save_overrides
 from .db import (
     connect,
@@ -30,13 +29,81 @@ from .db import (
     feed_rows,
     latest_brief,
     latest_prices,
-    recent_updates,
 )
-from .fetchers import bse_fetcher, nse_fetcher, pib_fetcher, price_fetcher, rss_fetcher
 from .theses import THESES
+
+# NOTE: heavy imports (analyzer, fetchers) are lazy — only loaded on click.
+# Keeping them at module top would force yfinance (12s) into every cold start.
 
 logging.basicConfig(level=logging.INFO)
 IST = ZoneInfo("Asia/Kolkata")
+
+
+# ---- cached read-only DB queries (TTL refresh) -------------------------
+@st.cache_data(ttl=30, show_spinner=False)
+def cached_feed_rows(limit, ticker, impact, urgency):
+    return [dict(r) for r in feed_rows(limit=limit, ticker=ticker,
+                                        impact=impact, urgency=urgency)]
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_latest_prices():
+    return {tk: dict(r) for tk, r in latest_prices().items()}
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_latest_brief():
+    b = latest_brief()
+    return dict(b) if b else None
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_universe_table():
+    """One DB query for all 18 holdings instead of 18 round-trips."""
+    with connect() as cx:
+        rows = cx.execute(
+            """SELECT u.ticker AS t, MAX(u.fetched_at) AS last_at,
+                      (SELECT headline FROM updates WHERE ticker = u.ticker
+                       ORDER BY fetched_at DESC LIMIT 1) AS last_head
+               FROM updates u WHERE u.ticker IS NOT NULL
+               GROUP BY u.ticker"""
+        ).fetchall()
+    return {r["t"]: {"head": r["last_head"], "at": r["last_at"]} for r in rows}
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_pib_rows():
+    with connect() as cx:
+        return [dict(r) for r in cx.execute(
+            "SELECT * FROM updates WHERE source='pib' "
+            "ORDER BY fetched_at DESC LIMIT 200"
+        ).fetchall()]
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_db_stats():
+    with connect() as cx:
+        u = cx.execute("SELECT COUNT(*) c FROM updates").fetchone()["c"]
+        a = cx.execute("SELECT COUNT(*) c FROM analyses").fetchone()["c"]
+        p = cx.execute("SELECT COUNT(*) c FROM prices").fetchone()["c"]
+    return u, a, p
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_thesis_recent(ticker: str):
+    with connect() as cx:
+        return [dict(r) for r in cx.execute(
+            """SELECT a.impact, a.urgency, a.action, a.reasoning,
+                      u.headline, u.fetched_at
+               FROM analyses a JOIN updates u ON u.id = a.update_id
+               WHERE a.ticker=? ORDER BY a.created_at DESC LIMIT 5""",
+            (ticker,),
+        ).fetchall()]
+
+
+def _bust_cache():
+    """Called after any sidebar fetch / analyser run."""
+    st.cache_data.clear()
 
 # --------------------------- page config / theme ------------------------
 st.set_page_config(
@@ -71,35 +138,38 @@ with st.sidebar:
     st.subheader("Manual run")
     if st.button("Fetch RSS news", use_container_width=True):
         with st.spinner("Pulling RSS..."):
+            from .fetchers import rss_fetcher
             n = rss_fetcher.fetch_all()
-        st.success(f"RSS inserted: {n}")
+        _bust_cache(); st.success(f"RSS inserted: {n}")
     if st.button("Fetch PIB", use_container_width=True):
         with st.spinner("Pulling PIB..."):
+            from .fetchers import pib_fetcher
             n = pib_fetcher.fetch_all()
-        st.success(f"PIB inserted: {n}")
+        _bust_cache(); st.success(f"PIB inserted: {n}")
     if st.button("Fetch NSE announcements", use_container_width=True):
         with st.spinner("Pulling NSE..."):
+            from .fetchers import nse_fetcher
             n = nse_fetcher.fetch_announcements(days=2)
-        st.success(f"NSE inserted: {n}")
+        _bust_cache(); st.success(f"NSE inserted: {n}")
     if st.button("Fetch BSE announcements", use_container_width=True):
         with st.spinner("Pulling BSE..."):
+            from .fetchers import bse_fetcher
             n = bse_fetcher.fetch_announcements(days=2)
-        st.success(f"BSE inserted: {n}")
+        _bust_cache(); st.success(f"BSE inserted: {n}")
     if st.button("Snapshot prices", use_container_width=True):
         with st.spinner("Pulling prices..."):
+            from .fetchers import price_fetcher
             n = price_fetcher.snapshot_universe()
-        st.success(f"Prices rows: {n}")
+        _bust_cache(); st.success(f"Prices rows: {n}")
     st.divider()
     if st.button("Run analyser now", type="primary", use_container_width=True):
         with st.spinner("Analysing unprocessed updates..."):
+            from .analyzer import run as run_analyzer
             n = run_analyzer(batch=50)
-        st.success(f"Analysed {n} updates")
+        _bust_cache(); st.success(f"Analysed {n} updates")
 
     st.divider()
-    with connect() as cx:
-        u_count = cx.execute("SELECT COUNT(*) c FROM updates").fetchone()["c"]
-        a_count = cx.execute("SELECT COUNT(*) c FROM analyses").fetchone()["c"]
-        p_count = cx.execute("SELECT COUNT(*) c FROM prices").fetchone()["c"]
+    u_count, a_count, p_count = cached_db_stats()
     st.caption(f"updates={u_count}  analyses={a_count}  price-rows={p_count}")
 
 
@@ -141,17 +211,17 @@ tabs = st.tabs(TABS)
 # --- 1. Morning Brief ---------------------------------------------------
 with tabs[0]:
     st.subheader("Today's Morning Brief")
-    brief = latest_brief()
+    brief = cached_latest_brief()
     if brief:
         st.caption(f"Date: {brief['date']} | generated {brief['created_at']}")
         st.markdown(brief["content"])
     else:
         st.info("No brief yet. Run morning_brief.py or wait for 7:30 IST.")
     if st.button("Regenerate brief now"):
-        from .morning_brief import build_and_store
-        with st.spinner("Calling Claude..."):
+        with st.spinner("Calling LLM..."):
+            from .morning_brief import build_and_store
             text = build_and_store()
-        st.markdown(text)
+        _bust_cache(); st.markdown(text)
 
 
 # --- 2. Live Feed -------------------------------------------------------
@@ -162,13 +232,13 @@ with tabs[1]:
     sel_ticker = c1.selectbox("Ticker", tk_options, index=0)
     sel_impact = c2.selectbox("Impact", ["(any)", "positive", "negative", "neutral"], index=0)
     sel_urg = c3.selectbox("Urgency", ["(any)", "high", "medium", "low"], index=0)
-    sel_limit = c4.selectbox("Rows", [50, 100, 200, 500], index=2)
+    sel_limit = c4.selectbox("Rows", [25, 50, 100, 200], index=1)
 
-    rows = feed_rows(
-        limit=sel_limit,
-        ticker=None if sel_ticker == "(all)" else sel_ticker,
-        impact=None if sel_impact == "(any)" else sel_impact,
-        urgency=None if sel_urg == "(any)" else sel_urg,
+    rows = cached_feed_rows(
+        sel_limit,
+        None if sel_ticker == "(all)" else sel_ticker,
+        None if sel_impact == "(any)" else sel_impact,
+        None if sel_urg == "(any)" else sel_urg,
     )
     if not rows:
         st.info("No items match. Try widening filters or running fetchers from sidebar.")
@@ -206,17 +276,16 @@ with tabs[1]:
 # --- 3. Universe table --------------------------------------------------
 with tabs[2]:
     st.subheader("Universe — 9 portfolio + 9 watchlist")
-    prices = latest_prices()
+    prices = cached_latest_prices()
+    last_by_ticker = cached_universe_table()
     data = []
     for tk, m in UNIVERSE.items():
         p = prices.get(tk)
-        with connect() as cx:
-            last = cx.execute(
-                """SELECT headline, fetched_at FROM updates WHERE ticker=?
-                   ORDER BY fetched_at DESC LIMIT 1""",
-                (tk,),
-            ).fetchone()
+        last = last_by_ticker.get(tk)
         bucket = "Portfolio" if tk in PORTFOLIO else "Watchlist"
+        head = last["head"] if last else "—"
+        if last and head and len(head) > 90:
+            head = head[:90] + "…"
         data.append({
             "Bucket": bucket,
             "Ticker": tk,
@@ -224,8 +293,8 @@ with tabs[2]:
             "Sector": m["sector"],
             "Last Close": p["close"] if p else None,
             "As of": p["asof_date"] if p else "",
-            "Last update": last["headline"][:90] + "…" if last and len(last["headline"]) > 90 else (last["headline"] if last else "—"),
-            "Last update time": last["fetched_at"][:16] if last else "—",
+            "Last update": head,
+            "Last update time": last["at"][:16] if last and last["at"] else "—",
         })
     df = pd.DataFrame(data).sort_values(["Bucket", "Ticker"]).reset_index(drop=True)
     st.dataframe(df, use_container_width=True, hide_index=True)
@@ -249,13 +318,7 @@ with tabs[3]:
                 st.markdown("**Thesis breaks if**")
                 for w in th["breaks"]:
                     st.markdown(f"- {w}")
-            with connect() as cx:
-                recent = cx.execute(
-                    """SELECT a.impact, a.urgency, a.action, a.reasoning, u.headline, u.fetched_at
-                       FROM analyses a JOIN updates u ON u.id = a.update_id
-                       WHERE a.ticker=? ORDER BY a.created_at DESC LIMIT 5""",
-                    (tk,),
-                ).fetchall()
+            recent = cached_thesis_recent(tk)
             if recent:
                 st.markdown("**Recent analyses**")
                 for r in recent:
@@ -272,10 +335,7 @@ with tabs[3]:
 # --- 5. Government Tracker ---------------------------------------------
 with tabs[4]:
     st.subheader("Government Tracker — PIB feed for our sectors")
-    with connect() as cx:
-        rows = cx.execute(
-            "SELECT * FROM updates WHERE source='pib' ORDER BY fetched_at DESC LIMIT 200"
-        ).fetchall()
+    rows = cached_pib_rows()
     if not rows:
         st.info("No PIB items yet. Hit 'Fetch PIB' in the sidebar.")
     else:
@@ -295,6 +355,7 @@ with tabs[5]:
     st.subheader("Upcoming results — universe")
     if st.button("Refresh from NSE", key="refresh_cal"):
         with st.spinner("Pulling NSE results calendar..."):
+            from .fetchers import nse_fetcher
             cal = nse_fetcher.fetch_results_calendar()
         st.session_state["_results_cal"] = cal
     cal = st.session_state.get("_results_cal")
@@ -318,8 +379,9 @@ with tabs[6]:
     sel = c1.selectbox("Ticker", sorted(UNIVERSE.keys()), key="why_tk")
     go = c2.button("Explain move", type="primary")
     if go:
-        with st.spinner("Pulling price, news, macro… asking Claude."):
+        with st.spinner("Pulling price, news, macro… asking the LLM."):
             try:
+                from .analyzer import explain_move
                 out = explain_move(sel)
             except Exception as e:
                 st.error(f"Failed: {e}")
@@ -355,8 +417,9 @@ with tabs[7]:
     txt = c2.text_area("Paste here", height=220,
                        placeholder="Annual report excerpt, broker note, news, transcript snippet…")
     if st.button("Run analysis", type="primary", disabled=not txt.strip()):
-        with st.spinner("Calling Claude..."):
+        with st.spinner("Calling the LLM..."):
             try:
+                from .analyzer import analyze_text
                 out = analyze_text(None if sel == "(none)" else sel, txt)
             except Exception as e:
                 st.error(f"Failed: {e}")
