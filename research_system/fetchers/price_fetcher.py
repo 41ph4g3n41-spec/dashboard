@@ -3,14 +3,16 @@
 - snapshot_universe(): writes last close OHLCV per ticker into `prices` table
 - intraday_move(ticker): returns dict of today's % move, intraday OHLC, vol
 - macro_snapshot(): ^GSPC, ^IXIC, ^DJI, ^N225, INR=X, BZ=F, GC=F, ^NSEI, ^BSESN
+
+yfinance is intentionally NOT imported at module top — it's a 12-second
+import. We defer it inside each function so the dashboard cold-start
+doesn't pay that cost when the user hasn't asked for prices yet.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-
-import yfinance as yf
 
 from ..config import UNIVERSE
 from ..db import upsert_price
@@ -35,6 +37,7 @@ MACRO_TICKERS = {
 def snapshot_universe() -> int:
     """Pull last 5d daily OHLCV for the whole universe. Returns # rows written."""
     import pandas as pd
+    import yfinance as yf
     syms = [m["yahoo"] for m in UNIVERSE.values() if m.get("yahoo")]
     sym_to_ticker = {m["yahoo"]: tk for tk, m in UNIVERSE.items() if m.get("yahoo")}
     if not syms:
@@ -94,6 +97,7 @@ def snapshot_universe() -> int:
 
 
 def intraday_move(ticker: str) -> dict | None:
+    import yfinance as yf
     meta = UNIVERSE.get(ticker.upper())
     if not meta or not meta.get("yahoo"):
         return None
@@ -123,6 +127,7 @@ def intraday_move(ticker: str) -> dict | None:
 
 
 def macro_snapshot() -> dict[str, dict]:
+    import yfinance as yf
     out: dict[str, dict] = {}
     for label, sym in MACRO_TICKERS.items():
         try:
