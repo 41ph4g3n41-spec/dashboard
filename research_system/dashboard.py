@@ -136,33 +136,33 @@ with st.sidebar:
     st.caption(datetime.now(IST).strftime("%a %d %b %Y, %H:%M IST"))
     st.divider()
     st.subheader("Manual run")
-    if st.button("Fetch RSS news", use_container_width=True):
+    if st.button("Fetch RSS news", width='stretch'):
         with st.spinner("Pulling RSS..."):
             from .fetchers import rss_fetcher
             n = rss_fetcher.fetch_all()
         _bust_cache(); st.success(f"RSS inserted: {n}")
-    if st.button("Fetch PIB", use_container_width=True):
+    if st.button("Fetch PIB", width='stretch'):
         with st.spinner("Pulling PIB..."):
             from .fetchers import pib_fetcher
             n = pib_fetcher.fetch_all()
         _bust_cache(); st.success(f"PIB inserted: {n}")
-    if st.button("Fetch NSE announcements", use_container_width=True):
+    if st.button("Fetch NSE announcements", width='stretch'):
         with st.spinner("Pulling NSE..."):
             from .fetchers import nse_fetcher
             n = nse_fetcher.fetch_announcements(days=2)
         _bust_cache(); st.success(f"NSE inserted: {n}")
-    if st.button("Fetch BSE announcements", use_container_width=True):
+    if st.button("Fetch BSE announcements", width='stretch'):
         with st.spinner("Pulling BSE..."):
             from .fetchers import bse_fetcher
             n = bse_fetcher.fetch_announcements(days=2)
         _bust_cache(); st.success(f"BSE inserted: {n}")
-    if st.button("Snapshot prices", use_container_width=True):
+    if st.button("Snapshot prices", width='stretch'):
         with st.spinner("Pulling prices..."):
             from .fetchers import price_fetcher
             n = price_fetcher.snapshot_universe()
         _bust_cache(); st.success(f"Prices rows: {n}")
     st.divider()
-    if st.button("Run analyser now", type="primary", use_container_width=True):
+    if st.button("Run analyser now", type="primary", width='stretch'):
         with st.spinner("Analysing unprocessed updates..."):
             from .analyzer import run as run_analyzer
             n = run_analyzer(batch=50)
@@ -297,7 +297,7 @@ with tabs[2]:
             "Last update time": last["at"][:16] if last and last["at"] else "—",
         })
     df = pd.DataFrame(data).sort_values(["Bucket", "Ticker"]).reset_index(drop=True)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width='stretch', hide_index=True)
 
 
 # --- 4. Thesis cards ----------------------------------------------------
@@ -369,7 +369,7 @@ with tabs[5]:
              "As on": c["as_on"], "Broadcast": c["broadcast"]}
             for c in cal
         ])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
 
 # --- 7. Why is X moving today? -----------------------------------------
