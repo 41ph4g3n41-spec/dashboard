@@ -9,3 +9,5 @@ venv/
 logs/*.log
 data/*.json
 .DS_Store
+# Cached Upstox instruments master (large, regenerated daily)
+data/upstox/

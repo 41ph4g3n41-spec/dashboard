@@ -4,10 +4,11 @@
 # also pulls in libsql-experimental for Turso sync.
 anthropic>=0.40.0
 google-genai>=0.3.0
-streamlit>=1.32.0
+streamlit>=1.37.0  # st.fragment(run_every=...) powers the live tiles
 APScheduler>=3.10.4
 feedparser>=6.0.11
 requests>=2.31.0
+websocket-client>=1.7.0  # Upstox Market Data Feed V3 (pure python, no native build)
 yfinance>=0.2.50
 python-dotenv>=1.0.1
 pandas>=2.2.0

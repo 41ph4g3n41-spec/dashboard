@@ -16,13 +16,19 @@ Streamlit dashboard on your laptop, interactive Telegram bot for your phone.
 | RSS (Moneycontrol, ET, Mint, BS) | `fetchers/rss_fetcher.py` |
 | PIB government press releases | `fetchers/pib_fetcher.py` |
 | Yahoo Finance prices + macro | `fetchers/price_fetcher.py` |
+| **Upstox live feed** — websocket V3 streamer | `fetchers/upstox_feed.py` |
+| **Upstox** — protobuf decoder (no deps) | `fetchers/upstox_proto.py` |
+| **Upstox** — REST quotes / option chain / instruments | `fetchers/upstox_rest.py` |
+| **Upstox** — instrument-key resolution | `fetchers/upstox_universe.py` |
+| **Global tape** — indices, futures, FX, commodities | `fetchers/global_feed.py` |
+| **Live Markets page** | `live_markets.py` |
 | Claude analyzer + "why is X moving?" | `analyzer.py` |
 | Morning brief (7:30 IST) | `morning_brief.py` |
 | Telegram + email alerts (outbound) | `alerts.py` |
 | Interactive Telegram bot (inbound commands) | `telegram_bot.py` |
 | APScheduler cron | `scheduler.py` |
-| Streamlit dashboard (9 tabs) | `dashboard.py` |
-| Offline test suite (23 tests) | `tests/test_smoke.py` |
+| Streamlit dashboard (10 tabs) | `dashboard.py` |
+| Offline test suite | `tests/test_smoke.py`, `tests/test_upstox.py` |
 
 ## Pick an LLM provider
 
@@ -150,7 +156,82 @@ injected into every Claude analysis).
 Set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_TO` in `.env`.
 Gmail: enable 2FA and create an app-password.
 
+## Live market data (Upstox)
+
+The **Live Markets** tab streams real-time Indian market data over the
+[Upstox Market Data Feed V3](https://upstox.com/developer/api-documentation/websocket)
+websocket, and pairs it with a global tape from Yahoo Finance.
+
+| Board | Source | Latency |
+|---|---|---|
+| NSE / BSE indices | Upstox websocket | real time |
+| Cash equities (your portfolio + watchlist) | Upstox websocket | real time |
+| Index & stock futures (NSE), commodities (MCX) | Upstox websocket | real time |
+| Option chains with greeks, IV, OI | Upstox websocket | real time |
+| US / Europe / Asia indices, US futures, FX, metals, energy, rates, crypto | Yahoo | futures & FX ~live, cash indices ~15 min delayed |
+
+Upstox is an Indian broker and its instrument master carries **no non-Indian
+instruments** — that is why the global board is Yahoo-sourced. MCX commodity
+futures (crude, gold, silver, copper) are the closest live proxy for
+international benchmarks that trades on an Indian exchange.
+
+### Setup
+
+```bash
+# .env  (local)                 |  Streamlit Cloud: Settings ▸ Secrets
+UPSTOX_ACCESS_TOKEN=...         |  UPSTOX_ACCESS_TOKEN = "..."
+```
+
+Generate a token via the OAuth flow at
+<https://account.upstox.com/developer/apps>.
+
+> **Tokens expire daily at 03:30 IST.** The page shows an auth error and needs
+> a fresh token each trading day. Nothing is cached across that boundary, so a
+> stale token fails loudly rather than showing yesterday's prices.
+
+Verify a token from the shell without opening the dashboard:
+
+```bash
+python -m research_system.fetchers.upstox_feed                       # Nifty 50 + Bank
+python -m research_system.fetchers.upstox_feed --mode ltpc --seconds 10 \
+    "NSE_INDEX|Nifty 50" "NSE_EQ|INE002A01018"
+```
+
+### Subscription modes
+
+Each instrument is subscribed in exactly one mode; the caps are Upstox's and
+are enforced client-side so an over-subscription fails clearly.
+
+| Mode | Cap | Payload |
+|---|---|---|
+| `ltpc` | 5,000 | last price, last traded qty/time, prev close |
+| `full` | 2,000 | + 5-level depth, day & intraday OHLC, OI, IV, ATP |
+| `option_greeks` | 3,000 | + best bid/ask, delta/gamma/theta/vega/rho, IV |
+| `full_d30` | 50 | as `full` with 30-level market depth |
+
+### Notes on the implementation
+
+* **No protobuf dependency.** The V3 feed is protobuf-encoded; rather than
+  pull in `protobuf` (native extension) and `upstox-python-sdk`, the frozen
+  `MarketDataFeedV3` schema is decoded by `fetchers/upstox_proto.py` in pure
+  Python. It was fuzzed against the official generated parser over 400
+  randomised frames with exact agreement, and `tests/test_upstox.py` pins that
+  behaviour with real wire bytes.
+* **TLS verification stays on.** The official SDK connects with
+  `cert_reqs=CERT_NONE`; this client does not, since the handshake carries a
+  bearer token.
+* **The socket survives Streamlit reruns.** The feed is a process singleton
+  and the price boards are `st.fragment`s, so reruns reattach rather than
+  re-handshake.
+* **The instruments master is cached** under `data/upstox/` for 20 hours
+  (Upstox regenerates it daily). That directory is gitignored — the NSE file
+  alone is tens of MB.
+
 ## Run the tests
+
+```bash
+PYTHONPATH=. python -m unittest discover -s research_system/tests -t .
+```
 
 ```bash
 PYTHONPATH=. python -m unittest research_system.tests.test_smoke -v

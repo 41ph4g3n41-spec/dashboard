@@ -12,3 +12,5 @@ research_system/data/*.json
 research_system/data/*.db
 research_system/logs/*.log
 .DS_Store
+# Cached Upstox instruments master (large, regenerated daily)
+research_system/data/upstox/

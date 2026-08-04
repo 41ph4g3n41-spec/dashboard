@@ -2,14 +2,16 @@
 
 Tabs:
  1. Morning Brief
- 2. Live Feed (filter ticker / impact / urgency)
- 3. Universe (price + last update per name)
- 4. Thesis Cards
- 5. Government Tracker (PIB-tagged by sector)
- 6. Results Calendar
- 7. Why is X moving? — on-demand explainer
- 8. Analyze — paste-in text + ticker → Claude
- 9. Settings — refresh data manually, run analyser, view DB stats
+ 2. Live Markets — real-time Upstox websocket ticks (indices, equities,
+    futures, options) plus a Yahoo-sourced global tape
+ 3. Live Feed (filter ticker / impact / urgency)
+ 4. Universe (price + last update per name)
+ 5. Thesis Cards
+ 6. Government Tracker (PIB-tagged by sector)
+ 7. Results Calendar
+ 8. Why is X moving? — on-demand explainer
+ 9. Analyze — paste-in text + ticker → Claude
+10. Settings — refresh data manually, run analyser, view DB stats
 """
 
 from __future__ import annotations
@@ -196,6 +198,7 @@ def ticker_pill(tk: str | None) -> str:
 # --------------------------- tabs ---------------------------------------
 TABS = [
     "Morning Brief",
+    "Live Markets",
     "Live Feed",
     "Universe",
     "Thesis Cards",
@@ -205,11 +208,12 @@ TABS = [
     "Analyze (paste)",
     "Holdings",
 ]
-tabs = st.tabs(TABS)
+# Keyed by name so inserting a tab never renumbers the blocks below.
+TAB = dict(zip(TABS, st.tabs(TABS)))
 
 
 # --- 1. Morning Brief ---------------------------------------------------
-with tabs[0]:
+with TAB["Morning Brief"]:
     st.subheader("Today's Morning Brief")
     brief = cached_latest_brief()
     if brief:
@@ -224,8 +228,14 @@ with tabs[0]:
         _bust_cache(); st.markdown(text)
 
 
+# --- 2. Live Markets (Upstox websocket + global) ------------------------
+with TAB["Live Markets"]:
+    from .live_markets import render as render_live_markets
+    render_live_markets()
+
+
 # --- 2. Live Feed -------------------------------------------------------
-with tabs[1]:
+with TAB["Live Feed"]:
     st.subheader("Live Feed — updates + Claude analysis")
     c1, c2, c3, c4 = st.columns(4)
     tk_options = ["(all)"] + sorted(UNIVERSE.keys())
@@ -274,7 +284,7 @@ with tabs[1]:
 
 
 # --- 3. Universe table --------------------------------------------------
-with tabs[2]:
+with TAB["Universe"]:
     st.subheader("Universe — 9 portfolio + 9 watchlist")
     prices = cached_latest_prices()
     last_by_ticker = cached_universe_table()
@@ -301,7 +311,7 @@ with tabs[2]:
 
 
 # --- 4. Thesis cards ----------------------------------------------------
-with tabs[3]:
+with TAB["Thesis Cards"]:
     st.subheader("Investment thesis cards (portfolio)")
     for tk, th in THESES.items():
         with st.container():
@@ -333,7 +343,7 @@ with tabs[3]:
 
 
 # --- 5. Government Tracker ---------------------------------------------
-with tabs[4]:
+with TAB["Govt Tracker"]:
     st.subheader("Government Tracker — PIB feed for our sectors")
     rows = cached_pib_rows()
     if not rows:
@@ -351,7 +361,7 @@ with tabs[4]:
 
 
 # --- 6. Results Calendar -----------------------------------------------
-with tabs[5]:
+with TAB["Results Calendar"]:
     st.subheader("Upcoming results — universe")
     if st.button("Refresh from NSE", key="refresh_cal"):
         with st.spinner("Pulling NSE results calendar..."):
@@ -373,7 +383,7 @@ with tabs[5]:
 
 
 # --- 7. Why is X moving today? -----------------------------------------
-with tabs[6]:
+with TAB["Why Is X Moving"]:
     st.subheader("Why is X moving today?")
     c1, c2 = st.columns([2, 1])
     sel = c1.selectbox("Ticker", sorted(UNIVERSE.keys()), key="why_tk")
@@ -410,7 +420,7 @@ with tabs[6]:
 
 
 # --- 8. Analyze (paste) -------------------------------------------------
-with tabs[7]:
+with TAB["Analyze (paste)"]:
     st.subheader("Ad-hoc analysis — paste anything, pick a name, get the read")
     c1, c2 = st.columns([1, 3])
     sel = c1.selectbox("Ticker (optional)", ["(none)"] + sorted(UNIVERSE.keys()))
@@ -429,7 +439,7 @@ with tabs[7]:
 
 
 # --- 9. Holdings editor -------------------------------------------------
-with tabs[8]:
+with TAB["Holdings"]:
     st.subheader("Holdings editor — add / remove tickers without touching code")
     st.caption("Edits write to data/holdings_override.json. Restart "
                "scheduler/dashboard after changes for fetchers to pick them up.")

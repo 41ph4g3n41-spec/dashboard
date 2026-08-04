@@ -232,7 +232,10 @@ class DashboardImportTest(unittest.TestCase):
         import importlib
         mod = importlib.import_module("research_system.dashboard")
         self.assertTrue(hasattr(mod, "TABS"))
-        self.assertEqual(len(mod.TABS), 9)
+        self.assertEqual(len(mod.TABS), 10)
+        self.assertIn("Live Markets", mod.TABS)
+        # Blocks are keyed by name, so every tab must have a container.
+        self.assertEqual(set(mod.TAB), set(mod.TABS))
 
 
 class LibsqlBackendTest(unittest.TestCase):
