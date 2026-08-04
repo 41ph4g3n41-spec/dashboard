@@ -279,8 +279,10 @@ UPSTOX_ACCESS_TOKEN = "your-token-here"
 Get a token from the [Upstox developer console](https://account.upstox.com/developer/apps)
 via the OAuth login flow.
 
-> Upstox access tokens expire **daily at 03:30 IST** — this page will show an
-> auth error and need a fresh token each trading day.
+> Token lifetimes differ: a standard access token expires **03:30 IST the
+> next day**, while an *extended* token (JWT claim `isExtended: true`, paid
+> plans, read-only market data) lasts about a **year**. Decode the `exp` claim
+> to see which you hold. On expiry this page shows an auth error.
 """
     )
 

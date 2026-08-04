@@ -11,10 +11,11 @@ Covers the read-only market endpoints the live dashboard needs:
   * ``/v2/market/status/{exchange}``    per-exchange market status
   * instruments master (assets.upstox.com) for symbol -> instrument_key
 
-Auth is a bearer access token read from ``UPSTOX_ACCESS_TOKEN``. Tokens are
-short-lived — Upstox expires them daily at 03:30 IST — so every call raises
-:class:`UpstoxAuthError` on 401 and the UI surfaces a re-login prompt rather
-than silently showing stale numbers.
+Auth is a bearer access token read from ``UPSTOX_ACCESS_TOKEN``. Standard
+tokens expire at 03:30 IST the following day; *extended* tokens (JWT claim
+``isExtended``) run about a year, also expiring at 03:30 IST. Either way every
+call raises :class:`UpstoxAuthError` on 401 so the UI surfaces a re-login
+prompt rather than silently showing stale numbers.
 
 The websocket feed in ``upstox_feed`` is the primary source of live ticks;
 this module supplies the cold-start snapshot (so tiles are populated before
@@ -94,9 +95,10 @@ def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
 
     if r.status_code in (401, 403):
         raise UpstoxAuthError(
-            f"Upstox rejected the access token ({r.status_code}). Tokens expire "
-            f"daily at 03:30 IST — generate a fresh one and update "
-            f"UPSTOX_ACCESS_TOKEN. Response: {r.text[:300]}"
+            f"Upstox rejected the access token ({r.status_code}). Standard tokens "
+            f"expire at 03:30 IST the next day (extended tokens last ~a year) — "
+            f"generate a fresh one and update UPSTOX_ACCESS_TOKEN. "
+            f"Response: {r.text[:300]}"
         )
     if r.status_code >= 400:
         raise UpstoxError(f"{path} -> HTTP {r.status_code}: {r.text[:400]}")

@@ -185,9 +185,12 @@ UPSTOX_ACCESS_TOKEN=...         |  UPSTOX_ACCESS_TOKEN = "..."
 Generate a token via the OAuth flow at
 <https://account.upstox.com/developer/apps>.
 
-> **Tokens expire daily at 03:30 IST.** The page shows an auth error and needs
-> a fresh token each trading day. Nothing is cached across that boundary, so a
-> stale token fails loudly rather than showing yesterday's prices.
+> **Check your token's lifetime — there are two kinds.** A standard access
+> token expires at **03:30 IST the next day**. An *extended* token (JWT claim
+> `isExtended: true`, offered on paid plans for read-only market data) lasts
+> about a **year**, also expiring at 03:30 IST. Decode the JWT's `exp` claim to
+> see which you hold. Either way an expired token fails loudly with an auth
+> error rather than serving stale prices — nothing is cached across expiry.
 
 Verify a token from the shell without opening the dashboard:
 
