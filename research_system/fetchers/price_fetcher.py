@@ -1,8 +1,14 @@
-"""Daily + intraday prices via yfinance.
+"""Daily + intraday prices, from Upstox when configured, else yfinance.
 
 - snapshot_universe(): writes last close OHLCV per ticker into `prices` table
 - intraday_move(ticker): returns dict of today's % move, intraday OHLC, vol
 - macro_snapshot(): ^GSPC, ^IXIC, ^DJI, ^N225, INR=X, BZ=F, GC=F, ^NSEI, ^BSESN
+
+Source selection: if UPSTOX_ACCESS_TOKEN is set we prefer Upstox — it is the
+user's own broker feed, so it covers recently-listed names that Yahoo is
+slow to carry, and needs no scraping. yfinance stays the fallback and remains
+the only source for `macro_snapshot()` (global indices, FX and commodities
+aren't in an Indian broker's equity feed).
 
 yfinance is intentionally NOT imported at module top — it's a 12-second
 import. We defer it inside each function so the dashboard cold-start
@@ -35,6 +41,29 @@ MACRO_TICKERS = {
 
 
 def snapshot_universe() -> int:
+    """Snapshot the universe from the best available source.
+
+    Tries Upstox first when a token is configured; falls back to yfinance if
+    it isn't, if the token is dead, or if the call returned nothing usable.
+    Returns the number of rows written.
+    """
+    from . import upstox_fetcher as ux
+
+    if ux.is_configured():
+        try:
+            rows = ux.snapshot_universe()
+            if rows:
+                return rows
+            log.warning("Upstox snapshot wrote 0 rows — falling back to yfinance")
+        except ux.UpstoxAuthError as e:
+            log.warning("Upstox token unusable (%s) — falling back to yfinance", e)
+        except ux.UpstoxError as e:
+            log.warning("Upstox snapshot failed (%s) — falling back to yfinance", e)
+
+    return _snapshot_universe_yf()
+
+
+def _snapshot_universe_yf() -> int:
     """Pull last 5d daily OHLCV for the whole universe. Returns # rows written."""
     import pandas as pd
     import yfinance as yf
@@ -97,6 +126,22 @@ def snapshot_universe() -> int:
 
 
 def intraday_move(ticker: str) -> dict | None:
+    """Today's move for one name — Upstox when available, else yfinance."""
+    from . import upstox_fetcher as ux
+
+    if ux.is_configured():
+        try:
+            move = ux.intraday_move(ticker)
+            if move:
+                return move
+        except ux.UpstoxError as e:
+            log.warning("Upstox intraday_move %s failed (%s) — using yfinance",
+                        ticker, e)
+
+    return _intraday_move_yf(ticker)
+
+
+def _intraday_move_yf(ticker: str) -> dict | None:
     import yfinance as yf
     meta = UNIVERSE.get(ticker.upper())
     if not meta or not meta.get("yahoo"):
@@ -111,6 +156,7 @@ def intraday_move(ticker: str) -> dict | None:
         chg = (float(last["Close"]) - float(prev["Close"])) / float(prev["Close"]) * 100.0
         return {
             "ticker": ticker,
+            "source": "yfinance",
             "yahoo": meta["yahoo"],
             "asof": str(hist.index[-1].date()),
             "open": float(last["Open"]),

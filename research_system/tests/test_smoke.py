@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 import unittest
 import warnings
 from datetime import datetime, timedelta, timezone
@@ -232,7 +233,21 @@ class DashboardImportTest(unittest.TestCase):
         import importlib
         mod = importlib.import_module("research_system.dashboard")
         self.assertTrue(hasattr(mod, "TABS"))
-        self.assertEqual(len(mod.TABS), 9)
+        self.assertEqual(len(mod.TABS), 10)
+        self.assertIn("Portfolio (Upstox)", mod.TABS)
+
+    def test_inr_uses_indian_grouping(self):
+        """Lakh/crore grouping, not the western 3-digit one."""
+        import importlib
+        _inr = importlib.import_module("research_system.dashboard")._inr
+        self.assertEqual(_inr(0), "₹0.00")
+        self.assertEqual(_inr(567.5), "₹567.50")
+        self.assertEqual(_inr(1234.5), "₹1,234.50")
+        self.assertEqual(_inr(100000), "₹1,00,000.00")
+        self.assertEqual(_inr(1234567.89), "₹12,34,567.89")
+        self.assertEqual(_inr(123456789.0), "₹12,34,56,789.00")
+        self.assertEqual(_inr(-1234.5), "-₹1,234.50")
+        self.assertEqual(_inr(None), "—")
 
 
 class LibsqlBackendTest(unittest.TestCase):
@@ -405,6 +420,330 @@ class HoldingsOverrideTest(unittest.TestCase):
         cfg.save_overrides(remove=["RELIANCE"])
         importlib.reload(cfg)
         self.assertNotIn("RELIANCE", cfg.PORTFOLIO)
+
+
+def _fake_jwt(**claims) -> str:
+    """Build an unsigned JWT-shaped string for token_info() tests.
+
+    Deliberately synthetic — no real credential belongs in a test file.
+    """
+    import base64 as _b64
+
+    def seg(d):
+        raw = json.dumps(d).encode()
+        return _b64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    return f"{seg({'alg': 'HS256'})}.{seg(claims)}.signature-not-checked"
+
+
+class UpstoxTokenTest(unittest.TestCase):
+    """Token plumbing: detection, JWT introspection, redaction."""
+
+    def setUp(self):
+        from research_system.fetchers import upstox_fetcher as ux
+        self.ux = ux
+
+    def test_not_configured_without_env(self):
+        with mock.patch.dict(os.environ, {"UPSTOX_ACCESS_TOKEN": ""}, clear=False):
+            self.assertFalse(self.ux.is_configured())
+            self.assertIsNone(self.ux.access_token())
+            self.assertEqual(self.ux.token_info(), {"configured": False})
+
+    def test_blank_token_is_not_configured(self):
+        with mock.patch.dict(os.environ, {"UPSTOX_ACCESS_TOKEN": "   "}, clear=False):
+            self.assertFalse(self.ux.is_configured())
+
+    def test_token_info_decodes_claims_and_expiry(self):
+        future = int(time.time()) + 30 * 86400
+        tok = _fake_jwt(sub="TESTUSER", iss="udapi-gateway-service",
+                        exp=future, isPlusPlan=True)
+        with mock.patch.dict(os.environ, {"UPSTOX_ACCESS_TOKEN": tok}, clear=False):
+            info = self.ux.token_info()
+        self.assertTrue(info["configured"])
+        self.assertTrue(info["readable"])
+        self.assertEqual(info["user_id"], "TESTUSER")
+        self.assertFalse(info["expired"])
+        self.assertEqual(info["days_left"], 29)          # floor of 29.99…
+        self.assertNotIn(tok, json.dumps(info), "token must not leak into info")
+
+    def test_token_info_flags_expired(self):
+        tok = _fake_jwt(sub="X", exp=int(time.time()) - 3600)
+        with mock.patch.dict(os.environ, {"UPSTOX_ACCESS_TOKEN": tok}, clear=False):
+            info = self.ux.token_info()
+        self.assertTrue(info["expired"])
+
+    def test_token_info_survives_opaque_token(self):
+        with mock.patch.dict(os.environ,
+                             {"UPSTOX_ACCESS_TOKEN": "not-a-jwt"}, clear=False):
+            info = self.ux.token_info()
+        self.assertTrue(info["configured"])
+        self.assertFalse(info["readable"])
+
+    def test_redact_strips_token(self):
+        with mock.patch.dict(os.environ,
+                             {"UPSTOX_ACCESS_TOKEN": "SECRET123"}, clear=False):
+            self.assertNotIn("SECRET123", self.ux._redact("bearer SECRET123 failed"))
+
+    def test_get_without_token_raises_auth_error(self):
+        with mock.patch.dict(os.environ, {"UPSTOX_ACCESS_TOKEN": ""}, clear=False):
+            with self.assertRaises(self.ux.UpstoxAuthError):
+                self.ux._get("/user/profile")
+
+    def test_401_becomes_auth_error(self):
+        resp = mock.Mock(status_code=401, text="unauthorised")
+        with mock.patch.dict(os.environ, {"UPSTOX_ACCESS_TOKEN": "t"}, clear=False), \
+             mock.patch.object(self.ux.requests, "get", return_value=resp):
+            with self.assertRaises(self.ux.UpstoxAuthError):
+                self.ux._get("/user/profile")
+
+    def test_error_status_payload_raises(self):
+        resp = mock.Mock(status_code=200)
+        resp.json.return_value = {"status": "error",
+                                  "errors": [{"message": "bad instrument"}]}
+        with mock.patch.dict(os.environ, {"UPSTOX_ACCESS_TOKEN": "t"}, clear=False), \
+             mock.patch.object(self.ux.requests, "get", return_value=resp):
+            with self.assertRaisesRegex(self.ux.UpstoxError, "bad instrument"):
+                self.ux._get("/market-quote/ltp")
+
+
+class UpstoxPortfolioTest(unittest.TestCase):
+    """Normalisation of holdings / positions / summary, all offline."""
+
+    RAW_HOLDINGS = [
+        {"trading_symbol": "HATSUN", "company_name": "Hatsun Agro Product",
+         "isin": "INE473B01035", "exchange": "NSE",
+         "instrument_token": "NSE_EQ|INE473B01035",
+         "quantity": 10, "average_price": 900.0, "last_price": 1000.0,
+         "pnl": 1000.0, "day_change": 5.0, "day_change_percentage": 0.5,
+         "t1_quantity": 0, "product": "D"},
+        # pnl deliberately missing -> must be derived, and a string qty
+        {"trading_symbol": "PAYTM", "company_name": "One 97 Communications",
+         "isin": "INE982J01020", "exchange": "NSE",
+         "instrument_token": "NSE_EQ|INE982J01020",
+         "quantity": "5", "average_price": "800", "last_price": "700",
+         "day_change": -10.0, "day_change_percentage": -1.4},
+    ]
+
+    def setUp(self):
+        from research_system.fetchers import upstox_fetcher as ux
+        self.ux = ux
+
+    def test_holdings_normalise_and_sort(self):
+        with mock.patch.object(self.ux, "_get", return_value=self.RAW_HOLDINGS):
+            hs = self.ux.holdings()
+        self.assertEqual(len(hs), 2)
+        # sorted by current value desc -> HATSUN (10k) before PAYTM (3.5k)
+        self.assertEqual(hs[0]["symbol"], "HATSUN")
+        self.assertEqual(hs[0]["invested"], 9000.0)
+        self.assertEqual(hs[0]["current_value"], 10000.0)
+        self.assertEqual(hs[0]["pnl"], 1000.0)
+        self.assertAlmostEqual(hs[0]["pnl_pct"], 11.11, places=2)
+
+    def test_missing_pnl_is_derived_and_strings_coerced(self):
+        with mock.patch.object(self.ux, "_get", return_value=self.RAW_HOLDINGS):
+            paytm = [h for h in self.ux.holdings() if h["symbol"] == "PAYTM"][0]
+        self.assertEqual(paytm["quantity"], 5.0)
+        self.assertEqual(paytm["invested"], 4000.0)
+        self.assertEqual(paytm["current_value"], 3500.0)
+        self.assertEqual(paytm["pnl"], -500.0)          # 5 * (700 - 800)
+        self.assertAlmostEqual(paytm["pnl_pct"], -12.5, places=2)
+
+    def test_portfolio_summary_aggregates(self):
+        with mock.patch.object(self.ux, "_get", return_value=self.RAW_HOLDINGS):
+            s = self.ux.portfolio_summary()
+        self.assertEqual(s["count"], 2)
+        self.assertEqual(s["invested"], 13000.0)
+        self.assertEqual(s["current_value"], 13500.0)
+        self.assertEqual(s["pnl"], 500.0)
+
+    def test_empty_holdings_summary_does_not_divide_by_zero(self):
+        with mock.patch.object(self.ux, "_get", return_value=[]):
+            s = self.ux.portfolio_summary()
+        self.assertEqual(s["count"], 0)
+        self.assertEqual(s["pnl_pct"], 0.0)
+
+    def test_suggestions_skip_names_already_tracked(self):
+        with mock.patch.object(self.ux, "_get", return_value=self.RAW_HOLDINGS):
+            sugg = self.ux.suggest_universe_overrides()
+        # both HATSUN and PAYTM are already in config.PORTFOLIO
+        self.assertEqual(sugg, {})
+
+    def test_suggestions_include_untracked_name(self):
+        raw = self.RAW_HOLDINGS + [{
+            "trading_symbol": "RELIANCE", "company_name": "Reliance Industries",
+            "isin": "INE002A01018", "exchange": "NSE",
+            "instrument_token": "NSE_EQ|INE002A01018",
+            "quantity": 1, "average_price": 100, "last_price": 110,
+        }]
+        with mock.patch.object(self.ux, "_get", return_value=raw):
+            sugg = self.ux.suggest_universe_overrides()
+        self.assertIn("RELIANCE", sugg)
+        self.assertEqual(sugg["RELIANCE"]["nse"], "RELIANCE")
+        self.assertEqual(sugg["RELIANCE"]["yahoo"], "RELIANCE.NS")
+        self.assertEqual(sugg["RELIANCE"]["upstox_key"], "NSE_EQ|INE002A01018")
+
+
+class UpstoxQuotesTest(unittest.TestCase):
+    """Instrument resolution + quote mapping + price snapshot."""
+
+    def setUp(self):
+        from research_system.fetchers import upstox_fetcher as ux
+        self.ux = ux
+        self.tmp, self.db_file = _fresh_db_env()
+        from research_system import db
+        self.db = db
+        self._patch = mock.patch.object(db, "DB_PATH", self.db_file)
+        self._patch.start()
+        db.ensure_db()
+
+    def tearDown(self):
+        self._patch.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_instrument_key_prefers_explicit_override(self):
+        from research_system import config as cfg
+        meta = dict(cfg.UNIVERSE["HATSUN"], upstox_key="NSE_EQ|OVERRIDE")
+        with mock.patch.dict(cfg.UNIVERSE, {"HATSUN": meta}):
+            self.assertEqual(self.ux.instrument_key_for("HATSUN"),
+                             "NSE_EQ|OVERRIDE")
+
+    def test_instrument_key_from_isin(self):
+        from research_system import config as cfg
+        meta = dict(cfg.UNIVERSE["HATSUN"], isin="INE473B01035")
+        with mock.patch.dict(cfg.UNIVERSE, {"HATSUN": meta}):
+            self.assertEqual(self.ux.instrument_key_for("HATSUN"),
+                             "NSE_EQ|INE473B01035")
+
+    def test_instrument_key_falls_back_to_master_lookup(self):
+        with mock.patch.object(self.ux, "instrument_map",
+                               return_value={"HATSUN": "NSE_EQ|FROM_MASTER"}):
+            self.assertEqual(self.ux.instrument_key_for("HATSUN"),
+                             "NSE_EQ|FROM_MASTER")
+
+    def test_unknown_ticker_resolves_to_none(self):
+        self.assertIsNone(self.ux.instrument_key_for("NOSUCHTICKER"))
+
+    def test_quote_map_uses_last_price_as_close(self):
+        """Upstox's ohlc.close is the *previous* close intraday, so the
+        current price must come from last_price."""
+        raw = {"NSE_EQ:HATSUN": {
+            "instrument_token": "NSE_EQ|X", "symbol": "HATSUN",
+            "ohlc": {"open": 990, "high": 1010, "low": 985, "close": 950},
+            "last_price": 1000, "volume": 12345,
+            "timestamp": "2026-08-04T15:30:00+05:30",
+        }}
+        with mock.patch.object(self.ux, "universe_instrument_keys",
+                               return_value={"HATSUN": "NSE_EQ|X"}), \
+             mock.patch.object(self.ux, "quotes", return_value=raw):
+            qm = self.ux.quote_map()
+        self.assertEqual(qm["HATSUN"]["close"], 1000)
+        self.assertEqual(qm["HATSUN"]["prev_close"], 950)
+        self.assertAlmostEqual(qm["HATSUN"]["pct_change"], 5.26, places=2)
+        self.assertEqual(qm["HATSUN"]["volume"], 12345)
+
+    def test_snapshot_universe_writes_prices(self):
+        qm = {"HATSUN": {"open": 990.0, "high": 1010.0, "low": 985.0,
+                         "close": 1000.0, "prev_close": 950.0,
+                         "volume": 12345, "timestamp": "2026-08-04T15:30:00+05:30"}}
+        with mock.patch.object(self.ux, "quote_map", return_value=qm):
+            rows = self.ux.snapshot_universe()
+        self.assertEqual(rows, 1)
+        prices = self.db.latest_prices()
+        self.assertEqual(prices["HATSUN"]["close"], 1000.0)
+        self.assertEqual(prices["HATSUN"]["asof_date"], "2026-08-04")
+
+    def test_instrument_map_returns_empty_on_download_failure(self):
+        with mock.patch.object(self.ux, "_load_instrument_cache", return_value=None), \
+             mock.patch.object(self.ux.requests, "get",
+                               side_effect=Exception("network down")):
+            self.assertEqual(self.ux.instrument_map(force=True), {})
+
+
+class PriceSourceFallbackTest(unittest.TestCase):
+    """price_fetcher must prefer Upstox when configured and degrade to
+    yfinance quietly when it isn't, or when the token is dead."""
+
+    def setUp(self):
+        from research_system.fetchers import price_fetcher as pf
+        from research_system.fetchers import upstox_fetcher as ux
+        self.pf, self.ux = pf, ux
+
+    def test_uses_yfinance_when_upstox_unconfigured(self):
+        with mock.patch.object(self.ux, "is_configured", return_value=False), \
+             mock.patch.object(self.pf, "_snapshot_universe_yf",
+                               return_value=7) as yf_call:
+            self.assertEqual(self.pf.snapshot_universe(), 7)
+        yf_call.assert_called_once()
+
+    def test_prefers_upstox_when_configured(self):
+        with mock.patch.object(self.ux, "is_configured", return_value=True), \
+             mock.patch.object(self.ux, "snapshot_universe", return_value=18), \
+             mock.patch.object(self.pf, "_snapshot_universe_yf",
+                               return_value=7) as yf_call:
+            self.assertEqual(self.pf.snapshot_universe(), 18)
+        yf_call.assert_not_called()
+
+    def test_falls_back_when_token_rejected(self):
+        with mock.patch.object(self.ux, "is_configured", return_value=True), \
+             mock.patch.object(self.ux, "snapshot_universe",
+                               side_effect=self.ux.UpstoxAuthError("expired")), \
+             mock.patch.object(self.pf, "_snapshot_universe_yf",
+                               return_value=7) as yf_call:
+            self.assertEqual(self.pf.snapshot_universe(), 7)
+        yf_call.assert_called_once()
+
+    def test_falls_back_when_upstox_returns_nothing(self):
+        with mock.patch.object(self.ux, "is_configured", return_value=True), \
+             mock.patch.object(self.ux, "snapshot_universe", return_value=0), \
+             mock.patch.object(self.pf, "_snapshot_universe_yf",
+                               return_value=7) as yf_call:
+            self.assertEqual(self.pf.snapshot_universe(), 7)
+        yf_call.assert_called_once()
+
+    def test_intraday_move_prefers_upstox(self):
+        move = {"ticker": "HATSUN", "source": "upstox", "close": 1000}
+        with mock.patch.object(self.ux, "is_configured", return_value=True), \
+             mock.patch.object(self.ux, "intraday_move", return_value=move), \
+             mock.patch.object(self.pf, "_intraday_move_yf") as yf_call:
+            self.assertEqual(self.pf.intraday_move("HATSUN")["source"], "upstox")
+        yf_call.assert_not_called()
+
+    def test_intraday_move_falls_back_on_error(self):
+        with mock.patch.object(self.ux, "is_configured", return_value=True), \
+             mock.patch.object(self.ux, "intraday_move",
+                               side_effect=self.ux.UpstoxError("boom")), \
+             mock.patch.object(self.pf, "_intraday_move_yf",
+                               return_value={"source": "yfinance"}) as yf_call:
+            self.assertEqual(self.pf.intraday_move("HATSUN")["source"], "yfinance")
+        yf_call.assert_called_once()
+
+
+class NoCommittedSecretsTest(unittest.TestCase):
+    """Guard-rail: example/config files must never carry a real token."""
+
+    def test_examples_have_empty_upstox_token(self):
+        from research_system.config import ROOT
+        repo = ROOT.parent
+        for rel in (".env.example", ".streamlit/secrets.toml.example"):
+            path = (ROOT / rel) if rel.startswith(".env") else (repo / rel)
+            text = path.read_text()
+            self.assertIn("UPSTOX_ACCESS_TOKEN", text,
+                          f"{rel} should document the token")
+            for line in text.splitlines():
+                if line.strip().startswith("UPSTOX_ACCESS_TOKEN"):
+                    value = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    self.assertEqual(value, "",
+                                     f"{rel} must not ship a real token")
+
+    def test_no_jwt_literal_in_source(self):
+        """A pasted Upstox JWT would start with this header segment."""
+        from research_system.config import ROOT
+        marker = "eyJ0eXAiOiJKV1Qi"
+        for path in list(ROOT.rglob("*.py")) + list(ROOT.parent.glob("*.py")):
+            if "tests" in path.parts:
+                continue
+            self.assertNotIn(marker, path.read_text(),
+                             f"possible hard-coded JWT in {path}")
 
 
 class SchedulerImportTest(unittest.TestCase):

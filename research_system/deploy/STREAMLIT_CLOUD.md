@@ -54,11 +54,21 @@ Once it boots (will fail with "ANTHROPIC_API_KEY not set" — expected), go to
 ANTHROPIC_API_KEY = "sk-ant-..."
 ANTHROPIC_MODEL   = "claude-sonnet-4-5"
 
+# optional — Upstox broker feed (read-only). Unlocks the
+# "Portfolio (Upstox)" tab with your real demat holdings and P&L, and
+# makes Upstox the price source ahead of Yahoo.
+# Token: https://account.upstox.com/developer/apps
+UPSTOX_ACCESS_TOKEN = ""
+
 # optional — only if you also run the Telegram bot on a VPS and want
 # the dashboard to push messages from sidebar buttons
 TELEGRAM_BOT_TOKEN = ""
 TELEGRAM_CHAT_ID   = ""
 ```
+
+> Secrets live only in Streamlit's secrets store — never commit any of
+> these to the repo. If a token is ever pasted somewhere public, rotate it
+> at the provider immediately.
 
 Save. The app auto-reboots.
 

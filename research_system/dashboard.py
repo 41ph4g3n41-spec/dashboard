@@ -9,7 +9,10 @@ Tabs:
  6. Results Calendar
  7. Why is X moving? — on-demand explainer
  8. Analyze — paste-in text + ticker → Claude
- 9. Settings — refresh data manually, run analyser, view DB stats
+ 9. Holdings — add/remove tickers without touching code
+10. Portfolio (Upstox) — real demat holdings, cost basis and P&L,
+    read-only; needs UPSTOX_ACCESS_TOKEN, hidden behind a setup note
+    when that isn't set
 """
 
 from __future__ import annotations
@@ -99,6 +102,52 @@ def cached_thesis_recent(ticker: str):
                WHERE a.ticker=? ORDER BY a.created_at DESC LIMIT 5""",
             (ticker,),
         ).fetchall()]
+
+
+# ---- Upstox (read-only broker feed) ------------------------------------
+# Short TTLs: these are live market values, but we still don't want a
+# re-render on every widget interaction to hit the broker API.
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_upstox_health():
+    from .fetchers import upstox_fetcher as ux
+    return ux.health()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_upstox_holdings():
+    from .fetchers import upstox_fetcher as ux
+    try:
+        return {"ok": True, "holdings": ux.holdings(),
+                "summary": ux.portfolio_summary()}
+    except ux.UpstoxError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_upstox_positions():
+    from .fetchers import upstox_fetcher as ux
+    try:
+        return {"ok": True, "positions": ux.positions()}
+    except ux.UpstoxError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_upstox_funds():
+    from .fetchers import upstox_fetcher as ux
+    try:
+        return {"ok": True, "funds": ux.funds()}
+    except ux.UpstoxError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_upstox_suggestions():
+    from .fetchers import upstox_fetcher as ux
+    try:
+        return {"ok": True, "suggestions": ux.suggest_universe_overrides()}
+    except ux.UpstoxError as e:
+        return {"ok": False, "error": str(e)}
 
 
 def _bust_cache():
@@ -204,6 +253,7 @@ TABS = [
     "Why Is X Moving",
     "Analyze (paste)",
     "Holdings",
+    "Portfolio (Upstox)",
 ]
 tabs = st.tabs(TABS)
 
@@ -479,3 +529,160 @@ with tabs[8]:
         "Portfolio": sorted(PORTFOLIO.keys()),
         "Watchlist": sorted(WATCHLIST.keys()),
     })
+
+
+# --- 10. Portfolio (Upstox) ---------------------------------------------
+def _inr(v: float | None) -> str:
+    """₹ with Indian thousands grouping, e.g. ₹12,34,567.89."""
+    if v is None:
+        return "—"
+    neg, v = v < 0, abs(float(v))
+    whole, frac = divmod(round(v, 2), 1)
+    s = str(int(whole))
+    if len(s) > 3:                       # last 3, then pairs: 12,34,567
+        head, tail = s[:-3], s[-3:]
+        parts = []
+        while len(head) > 2:
+            parts.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            parts.insert(0, head)
+        s = ",".join(parts + [tail])
+    return f"{'-' if neg else ''}₹{s}.{int(round(frac * 100)):02d}"
+
+
+with tabs[9]:
+    st.subheader("Portfolio — live from Upstox (read-only)")
+
+    _health = cached_upstox_health()
+    _tok = _health.get("token", {})
+
+    # NOTE: this tab branches with if/else rather than st.stop(). st.stop()
+    # aborts the *whole* script run, not just this tab.
+    if not _tok.get("configured"):
+        st.info(
+            "**Upstox is not connected.** Set `UPSTOX_ACCESS_TOKEN` to pull "
+            "your real demat holdings, cost basis and P&L here — and to use "
+            "your broker feed for prices instead of Yahoo."
+        )
+        st.markdown(
+            "- **Streamlit Cloud** — App ▸ Settings ▸ Secrets:\n"
+            "  ```toml\n  UPSTOX_ACCESS_TOKEN = \"...\"\n  ```\n"
+            "- **VPS / laptop** — add `UPSTOX_ACCESS_TOKEN=...` to `.env`\n\n"
+            "Generate a token at "
+            "[account.upstox.com/developer/apps](https://account.upstox.com/developer/apps).\n\n"
+            "This tab only ever *reads* — holdings, positions, funds and "
+            "quotes. It cannot place, modify or cancel orders."
+        )
+    else:
+        # ---- token / connection status strip ---------------------------
+        _c1, _c2, _c3 = st.columns([2, 2, 3])
+        if _tok.get("expired"):
+            _c1.error("Token expired")
+        elif isinstance(_tok.get("days_left"), int) and _tok["days_left"] < 7:
+            _c1.warning(f"Token expires in {_tok['days_left']}d")
+        else:
+            _c1.success("Token valid")
+        if _tok.get("expires_at"):
+            _c2.caption(f"Expires {_tok['expires_at']}")
+        if _tok.get("user_id"):
+            _c3.caption(f"Upstox user `{_tok['user_id']}`")
+
+        if not _health.get("ok"):
+            st.error(_health.get("message", "Upstox connection failed."))
+            st.caption(
+                "If the token expired, generate a fresh one and update "
+                "`UPSTOX_ACCESS_TOKEN`. Prices fall back to Yahoo "
+                "automatically meanwhile — the rest of the dashboard is "
+                "unaffected."
+            )
+        else:
+            st.caption(
+                f"{_health.get('user_name') or '—'} · "
+                f"{_health.get('broker') or 'Upstox'} · "
+                f"{', '.join(_health.get('exchanges') or [])}"
+            )
+            if st.button("Refresh from Upstox"):
+                _bust_cache()
+                st.rerun()
+
+            # ---- holdings -------------------------------------------------
+            _hres = cached_upstox_holdings()
+            if not _hres.get("ok"):
+                st.error(_hres.get("error"))
+            else:
+                _holdings = _hres["holdings"]
+                _summary = _hres["summary"]
+
+                if not _holdings:
+                    st.info("No long-term holdings in this Upstox account.")
+                else:
+                    _m = st.columns(4)
+                    _m[0].metric("Invested", _inr(_summary["invested"]))
+                    _m[1].metric("Current value", _inr(_summary["current_value"]))
+                    _m[2].metric("Total P&L", _inr(_summary["pnl"]),
+                                 delta=f"{_summary['pnl_pct']:+.2f}%")
+                    _m[3].metric("Day P&L", _inr(_summary["day_pnl"]))
+
+                    _tracked = {(m.get("nse") or "").upper()
+                                for m in UNIVERSE.values()}
+                    st.dataframe(pd.DataFrame([{
+                        "Symbol": h["symbol"],
+                        "Company": h["company"],
+                        "Qty": h["quantity"],
+                        "Avg cost": h["avg_price"],
+                        "LTP": h["last_price"],
+                        "Invested": h["invested"],
+                        "Current": h["current_value"],
+                        "P&L": h["pnl"],
+                        "P&L %": h["pnl_pct"],
+                        "Day %": h["day_change_pct"],
+                        "Tracked": "✓" if (h["symbol"] or "").upper() in _tracked
+                                   else "",
+                    } for h in _holdings]), width='stretch', hide_index=True)
+
+                # ---- positions --------------------------------------------
+                _pres = cached_upstox_positions()
+                if _pres.get("ok") and _pres["positions"]:
+                    st.markdown("#### Open positions (intraday)")
+                    st.dataframe(pd.DataFrame(_pres["positions"]),
+                                 width='stretch', hide_index=True)
+                elif not _pres.get("ok"):
+                    st.caption(f"Positions unavailable: {_pres.get('error')}")
+
+                # ---- funds ------------------------------------------------
+                _fres = cached_upstox_funds()
+                if _fres.get("ok") and _fres["funds"]:
+                    with st.expander("Funds & margin"):
+                        st.json(_fres["funds"])
+
+                # ---- reconcile demat against the research universe --------
+                st.markdown("#### Holdings not in the research universe")
+                st.caption(
+                    "Names you actually own that the monitor isn't tracking. "
+                    "Adding one writes to data/holdings_override.json — same "
+                    "as the Holdings tab. Fill in the sector afterwards; "
+                    "Upstox doesn't classify."
+                )
+                _sres = cached_upstox_suggestions()
+                if not _sres.get("ok"):
+                    st.caption(f"Could not compute: {_sres.get('error')}")
+                elif not _sres["suggestions"]:
+                    st.success("Every Upstox holding is already in the universe.")
+                else:
+                    _sugg = _sres["suggestions"]
+                    _pick = st.multiselect("Add to the universe",
+                                           sorted(_sugg.keys()), key="ux_add_pick")
+                    _bucket = st.radio("Bucket", ["portfolio", "watchlist"],
+                                       horizontal=True, key="ux_add_bucket")
+                    if st.button("Add selected", type="primary", disabled=not _pick):
+                        save_overrides(**{_bucket: {k: _sugg[k] for k in _pick}})
+                        _bust_cache()
+                        st.success(
+                            f"Added {', '.join(_pick)} to {_bucket}. Restart the "
+                            "scheduler/dashboard for fetchers to pick them up."
+                        )
+                    st.dataframe(pd.DataFrame([
+                        {"Symbol": k, "Company": v["name"], "ISIN": v.get("isin")}
+                        for k, v in sorted(_sugg.items())
+                    ]), width='stretch', hide_index=True)

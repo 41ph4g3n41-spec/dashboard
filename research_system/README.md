@@ -15,14 +15,15 @@ Streamlit dashboard on your laptop, interactive Telegram bot for your phone.
 | BSE corp announcements + transcripts + annual reports | `fetchers/bse_fetcher.py` |
 | RSS (Moneycontrol, ET, Mint, BS) | `fetchers/rss_fetcher.py` |
 | PIB government press releases | `fetchers/pib_fetcher.py` |
-| Yahoo Finance prices + macro | `fetchers/price_fetcher.py` |
+| Prices + macro (Upstox when configured, else Yahoo) | `fetchers/price_fetcher.py` |
+| Upstox broker feed — holdings, positions, funds, quotes (read-only) | `fetchers/upstox_fetcher.py` |
 | Claude analyzer + "why is X moving?" | `analyzer.py` |
 | Morning brief (7:30 IST) | `morning_brief.py` |
 | Telegram + email alerts (outbound) | `alerts.py` |
 | Interactive Telegram bot (inbound commands) | `telegram_bot.py` |
 | APScheduler cron | `scheduler.py` |
-| Streamlit dashboard (9 tabs) | `dashboard.py` |
-| Offline test suite (23 tests) | `tests/test_smoke.py` |
+| Streamlit dashboard (10 tabs) | `dashboard.py` |
+| Offline test suite (63 tests) | `tests/test_smoke.py` |
 
 ## Pick an LLM provider
 
@@ -145,6 +146,38 @@ Two options:
 Edit `theses.py` to update your investment thesis per holding (this text is
 injected into every Claude analysis).
 
+## Upstox broker feed (optional)
+
+Set `UPSTOX_ACCESS_TOKEN` in `.env` (or Streamlit secrets) and two things
+switch on:
+
+1. **"Portfolio (Upstox)" tab** — your real demat holdings with quantity,
+   average cost, LTP, invested vs current value and P&L, plus intraday
+   positions and funds. It also lists names you actually own that the
+   monitor isn't tracking, and can add them to the universe in one click.
+2. **Upstox becomes the price source**, ahead of Yahoo. Your broker feed
+   covers recently-listed names Yahoo is slow to carry. yfinance stays the
+   automatic fallback, and remains the only source for `macro_snapshot()`
+   (global indices, FX, commodities).
+
+Generate a token at https://account.upstox.com/developer/apps.
+
+**This integration is read-only by construction.** Every call is a GET
+against a `user/`, `portfolio/` or `market-quote/` endpoint — there is no
+code path that can place, modify or cancel an order.
+
+Ticker → Upstox instrument resolution tries, in order: an `upstox_key` in
+the holding's config meta, then `NSE_EQ|<isin>` from an `isin` field, then
+a lookup in Upstox's public instrument master (downloaded once, cached in
+`data/` for a week — no credentials needed, so this keeps working even
+after the token expires).
+
+> **Treat the token as a live credential for your broking account.** It is
+> read from the environment on every call, never written to disk, never
+> logged, and stripped from any error message. Don't commit it, don't paste
+> it into an issue, PR or chat. If it leaks, rotate it in the developer
+> console — the dashboard shows its expiry date and warns a week out.
+
 ## Email morning brief (optional)
 
 Set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_TO` in `.env`.
@@ -156,10 +189,13 @@ Gmail: enable 2FA and create an app-password.
 PYTHONPATH=. python -m unittest research_system.tests.test_smoke -v
 ```
 
-23 offline tests cover DB roundtrip, dedupe, time windows, alias matching,
+63 offline tests cover DB roundtrip, dedupe, time windows, alias matching,
 sector matching, Claude prompt building, JSON extraction (incl. fenced /
 multi-object cases), thesis-card schema, holdings-override flow, alerts
-config, Telegram dispatcher, scheduler cron, and dashboard module load.
+config, Telegram dispatcher, scheduler cron, dashboard module load, and the
+Upstox layer (token introspection, redaction, holdings normalisation,
+instrument resolution, quote mapping, price-source fallback). No network
+calls — every Upstox test is mocked.
 
 ## Where things live
 
